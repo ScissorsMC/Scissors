@@ -1,0 +1,10 @@
+--- a/net/minecraft/util/BlockUtil.java
++++ b/net/minecraft/util/BlockUtil.java
+@@ -16,6 +_,7 @@
+     public static BlockUtil.FoundRectangle getLargestRectangleAround(
+         final BlockPos center, final Direction.Axis axis1, final int limit1, final Direction.Axis axis2, final int limit2, final Predicate<BlockPos> test
+     ) {
++        System.out.println("hello");
+         BlockPos.MutableBlockPos pos = center.mutable();
+         Direction negativeDirection1 = Direction.get(Direction.AxisDirection.NEGATIVE, axis1);
+         Direction positiveDirection1 = negativeDirection1.getOpposite();

@@ -1,7 +1,6 @@
 pluginManagement {
     repositories {
         gradlePluginPortal()
-        mavenLocal()
         maven("https://repo.papermc.io/repository/maven-public/")
     }
 }
@@ -12,5 +11,37 @@ plugins {
 
 rootProject.name = "fork"
 
-include("fork-api")
-include("fork-server")
+for (name in listOf("fork-api", "fork-server")) {
+    include(name)
+    file(name).mkdirs()
+}
+
+// optionalInclude("test-plugin") // possibly include a test plugin for your fork.
+
+fun optionalInclude(name: String, op: (ProjectDescriptor.() -> Unit)? = null) {
+    val settingsFile = file("$name.settings.gradle.kts")
+    if (settingsFile.exists()) {
+        apply(from = settingsFile)
+        findProject(":$name")?.let { op?.invoke(it) }
+    } else {
+        settingsFile.writeText(
+            """
+            // Uncomment to enable the '$name' project
+            // include(":$name")
+
+            """.trimIndent()
+        )
+    }
+}
+
+gradle.lifecycle.beforeProject {
+    val mcVersion = providers.gradleProperty("mcVersion").get().trim()
+    val paperVersionChannel = providers.gradleProperty("channel").get().trim()
+    val paperBuildNumber = providers.environmentVariable("BUILD_NUMBER").orNull?.trim()?.toInt()
+    val versionString = if (paperBuildNumber == null) {
+        "$mcVersion.local-SNAPSHOT"
+    } else {
+        "$mcVersion.build.$paperBuildNumber-${paperVersionChannel.lowercase()}"
+    }
+    version = versionString
+}
