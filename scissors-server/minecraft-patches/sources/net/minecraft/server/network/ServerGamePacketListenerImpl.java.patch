@@ -1,0 +1,11 @@
+--- a/net/minecraft/server/network/ServerGamePacketListenerImpl.java
++++ b/net/minecraft/server/network/ServerGamePacketListenerImpl.java
+@@ -3484,7 +_,7 @@
+             }
+ 
+             boolean validSlot = packet.slotNum() >= 1 && packet.slotNum() <= 45;
+-            boolean validData = itemStack.isEmpty() || itemStack.getCount() <= itemStack.getMaxStackSize();
++            boolean validData = itemStack.isEmpty() || itemStack.getCount() <= itemStack.getMaxStackSize() && ItemStack.validateStrict(itemStack).isSuccess(); // Scissors - reject stacks with invalid nested components; saved toolbars bypass /give validation
+             if (drop || (validSlot && !ItemStack.matches(this.player.inventoryMenu.getSlot(packet.slotNum()).getItem(), packet.itemStack()))) { // Insist on valid slot
+                 // CraftBukkit start - Call click event
+                 org.bukkit.inventory.InventoryView inventory = this.player.inventoryMenu.getBukkitView();
