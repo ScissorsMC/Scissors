@@ -1,0 +1,53 @@
+--- a/net/minecraft/world/item/ItemStack.java
++++ b/net/minecraft/world/item/ItemStack.java
+@@ -281,14 +_,14 @@
+         this.components = new PatchedDataComponentMap(DataComponentMap.EMPTY);
+     }
+ 
+-    private static DataResult<?> validateComponents(final DataComponentMap components) {
+-        if (components.has(DataComponents.MAX_DAMAGE) && components.getOrDefault(DataComponents.MAX_STACK_SIZE, 1) > 1) {
++    private static DataResult<?> validateComponents(final DataComponentGetter components) {
++        if (components.get(DataComponents.MAX_DAMAGE) != null && components.getOrDefault(DataComponents.MAX_STACK_SIZE, 1) > 1) {
+             return DataResult.error(() -> "Item cannot be both damageable and stackable");
+         }
+ 
+         ItemContainerContents container = components.get(DataComponents.CONTAINER);
+         if (container != null) {
+-            DataResult<?> validationContents = validateContainedItemSizes(container.nonEmptyItems());
++            DataResult<?> validationContents = validateContainedItems(container.nonEmptyItems());
+             if (validationContents.isError()) {
+                 return validationContents;
+             }
+@@ -296,7 +_,7 @@
+ 
+         BundleContents bundle = components.get(DataComponents.BUNDLE_CONTENTS);
+         if (bundle != null) {
+-            DataResult<?> validationResult = validateContainedItemSizes(bundle.items());
++            DataResult<?> validationResult = validateContainedItems(bundle.items());
+             if (validationResult.isError()) {
+                 return validationResult;
+             }
+@@ -309,7 +_,7 @@
+ 
+         ChargedProjectiles chargedProjectiles = components.get(DataComponents.CHARGED_PROJECTILES);
+         if (chargedProjectiles != null) {
+-            DataResult<?> validationResult = validateContainedItemSizes(chargedProjectiles.items());
++            DataResult<?> validationResult = validateContainedItems(chargedProjectiles.items());
+             if (validationResult.isError()) {
+                 return validationResult;
+             }
+@@ -318,8 +_,13 @@
+         return DataResult.success(Unit.INSTANCE);
+     }
+ 
+-    private static DataResult<?> validateContainedItemSizes(final Iterable<? extends ItemInstance> items) {
++    private static DataResult<?> validateContainedItems(final Iterable<? extends ItemInstance> items) {
+         for (ItemInstance item : items) {
++            DataResult<?> validationResult = validateComponents(item);
++            if (validationResult.isError()) {
++                return validationResult;
++            }
++
+             int itemCount = item.count();
+             int maxStackSize = item.getMaxStackSize();
+             if (itemCount > maxStackSize) {

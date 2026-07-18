@@ -1,0 +1,43 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Telesphoreo <me@telesphoreo.me>
+Date: Sat, 18 Jul 2026 18:29:16 -0400
+Subject: [PATCH] Reject invalid nested item components
+
+Cover malformed item templates in bundle contents so strict validation cannot regress and expose client crashes.
+
+diff --git a/src/test/java/io/papermc/paper/item/ItemStackValidationTest.java b/src/test/java/io/papermc/paper/item/ItemStackValidationTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..78cc1a76f8983c197c110e586bdd63915fa91719
+--- /dev/null
++++ b/src/test/java/io/papermc/paper/item/ItemStackValidationTest.java
+@@ -0,0 +1,30 @@
++package io.papermc.paper.item;
++
++import java.util.List;
++import net.minecraft.core.component.DataComponentPatch;
++import net.minecraft.core.component.DataComponents;
++import net.minecraft.world.item.ItemStack;
++import net.minecraft.world.item.ItemStackTemplate;
++import net.minecraft.world.item.Items;
++import net.minecraft.world.item.component.BundleContents;
++import org.bukkit.support.environment.AllFeatures;
++import org.junit.jupiter.api.Test;
++
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++@AllFeatures
++class ItemStackValidationTest {
++
++    @Test
++    void rejectsInvalidItemInBundle() {
++        final ItemStackTemplate invalidHoe = new ItemStackTemplate(
++            Items.NETHERITE_HOE,
++            DataComponentPatch.builder().set(DataComponents.MAX_STACK_SIZE, 69).build()
++        );
++        final ItemStack bundle = new ItemStack(Items.BUNDLE);
++        bundle.set(DataComponents.BUNDLE_CONTENTS, new BundleContents(List.of(invalidHoe)));
++        bundle.set(DataComponents.MAX_STACK_SIZE, 99);
++
++        assertTrue(ItemStack.validateStrict(bundle).isError());
++    }
++}
