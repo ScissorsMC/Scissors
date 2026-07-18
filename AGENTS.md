@@ -8,6 +8,11 @@ files produced by applying patches are development worktrees, not the repository
 Read this file before changing code. Human setup and build instructions are in
 `README.md`.
 
+## Version-scoped learnings
+
+Before revisiting an exploit or subsystem, read `learnings/README.md` and the directory matching the exact `mcVersion`.
+Treat notes from other Minecraft versions as leads only and revalidate them against the current sources.
+
 ## Project identity and upstream boundary
 
 Scissors owns:

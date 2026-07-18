@@ -1,0 +1,136 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Telesphoreo <me@telesphoreo.me>
+Date: Sat, 18 Jul 2026 17:22:51 -0400
+Subject: [PATCH] Limit translatable component expansion
+
+Repeated translation arguments can expand a small component exponentially during flattening. Cap argument expansion and nesting so malicious payloads cannot exhaust server resources.
+
+diff --git a/src/main/java/io/papermc/paper/adventure/PaperAdventure.java b/src/main/java/io/papermc/paper/adventure/PaperAdventure.java
+index bef2c6b6cbd5663d058147d1c7b6dbaf2cc66d3c..6e9aee2aa11f0857607d8e8861950261110117b5 100644
+--- a/src/main/java/io/papermc/paper/adventure/PaperAdventure.java
++++ b/src/main/java/io/papermc/paper/adventure/PaperAdventure.java
+@@ -63,6 +63,10 @@ import static java.util.Objects.requireNonNull;
+ 
+ public final class PaperAdventure {
+     private static final Pattern LOCALIZATION_PATTERN = Pattern.compile("%(?:(\\d+)\\$)?s");
++    // Scissors start - Bound translatable component expansion
++    private static final int MAX_TRANSLATION_ARGUMENTS = 8;
++    private static final int MAX_TRANSLATION_NESTING = 4;
++    // Scissors end - Bound translatable component expansion
+     public static final ComponentFlattener FLATTENER = ComponentFlattener.basic().toBuilder()
+         .complexMapper(TranslatableComponent.class, (translatable, consumer) -> {
+             final Language language = Language.getInstance();
+@@ -79,6 +83,7 @@ public final class PaperAdventure {
+             final List<TranslationArgument> args = translatable.arguments();
+             int argPosition = 0;
+             int lastIdx = 0;
++            int expandedArgs = 0; // Scissors - Bound translatable component expansion
+             while (matcher.find()) {
+                 // append prior
+                 if (lastIdx < matcher.start()) {
+@@ -92,6 +97,12 @@ public final class PaperAdventure {
+                     try {
+                         final int idx = Integer.parseInt(argIdx) - 1;
+                         if (idx < args.size()) {
++                            // Scissors start - Bound translatable component expansion
++                            if (expandedArgs++ >= MAX_TRANSLATION_ARGUMENTS) {
++                                consumer.accept(Component.text("..."));
++                                return;
++                            }
++                            // Scissors end - Bound translatable component expansion
+                             consumer.accept(args.get(idx).asComponent());
+                         }
+                     } catch (final NumberFormatException ex) {
+@@ -100,6 +111,12 @@ public final class PaperAdventure {
+                 } else {
+                     final int idx = argPosition++;
+                     if (idx < args.size()) {
++                        // Scissors start - Bound translatable component expansion
++                        if (expandedArgs++ >= MAX_TRANSLATION_ARGUMENTS) {
++                            consumer.accept(Component.text("..."));
++                            return;
++                        }
++                        // Scissors end - Bound translatable component expansion
+                         consumer.accept(args.get(idx).asComponent());
+                     }
+                 }
+@@ -110,6 +127,7 @@ public final class PaperAdventure {
+                 consumer.accept(Component.text(translated.substring(lastIdx)));
+             }
+         })
++        .nestingLimit(MAX_TRANSLATION_NESTING) // Scissors - Bound translatable component expansion
+         .build();
+     public static final AttributeKey<Locale> LOCALE_ATTRIBUTE = AttributeKey.valueOf("adventure:locale"); // init after FLATTENER because classloading triggered here might create a logger
+     public static final ANSIComponentSerializer ANSI_SERIALIZER = ANSIComponentSerializer.builder().flattener(FLATTENER).build();
+diff --git a/src/test/java/io/papermc/paper/adventure/DecimatorTest.java b/src/test/java/io/papermc/paper/adventure/DecimatorTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..116a337805d4a5d6216688318def9626bb0d4fdc
+--- /dev/null
++++ b/src/test/java/io/papermc/paper/adventure/DecimatorTest.java
+@@ -0,0 +1,66 @@
++package io.papermc.paper.adventure;
++
++import com.mojang.serialization.JsonOps;
++import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
++import net.minecraft.network.chat.Component;
++import net.minecraft.network.chat.ComponentSerialization;
++import org.bukkit.support.environment.VanillaFeature;
++import org.junit.jupiter.api.Test;
++
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++@VanillaFeature
++class DecimatorTest {
++
++    private static final String REPEATED_PLACEHOLDERS = "%1$s".repeat(16);
++
++    @Test
++    void boundsVanillaComponentExpansion() {
++        final Component component = nestedVanillaComponent(4);
++
++        final String flattened = component.getString();
++        assertTrue(flattened.endsWith("..."));
++        assertTrue(flattened.length() < 20_000);
++    }
++
++    @Test
++    void rejectsComplexVanillaComponentsDuringSerialization() {
++        final Component component = nestedVanillaComponent(4);
++
++        assertTrue(ComponentSerialization.CODEC.encodeStart(JsonOps.INSTANCE, Component.literal("safe")).isSuccess());
++        assertTrue(ComponentSerialization.CODEC.encodeStart(
++            JsonOps.INSTANCE,
++            PaperAdventure.asVanilla(net.kyori.adventure.text.Component.text("safe"))
++        ).isSuccess());
++        assertFalse(ComponentSerialization.CODEC.encodeStart(JsonOps.INSTANCE, component).isSuccess());
++    }
++
++    @Test
++    void boundsAdventureComponentExpansion() {
++        final net.kyori.adventure.text.Component component = nestedAdventureComponent(4);
++        final String flattened = PlainTextComponentSerializer.builder()
++            .flattener(PaperAdventure.FLATTENER)
++            .build()
++            .serialize(component);
++
++        assertTrue(flattened.endsWith("..."));
++        assertTrue(flattened.length() < 20_000);
++    }
++
++    private static Component nestedVanillaComponent(final int depth) {
++        Component component = Component.literal("ouch");
++        for (int i = 0; i < depth; i++) {
++            component = Component.translatable(REPEATED_PLACEHOLDERS, component);
++        }
++        return component;
++    }
++
++    private static net.kyori.adventure.text.Component nestedAdventureComponent(final int depth) {
++        net.kyori.adventure.text.Component component = net.kyori.adventure.text.Component.text("ouch");
++        for (int i = 0; i < depth; i++) {
++            component = net.kyori.adventure.text.Component.translatable(REPEATED_PLACEHOLDERS, component);
++        }
++        return component;
++    }
++}

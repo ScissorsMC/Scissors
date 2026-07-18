@@ -1,0 +1,36 @@
+--- a/net/minecraft/network/chat/ComponentSerialization.java
++++ b/net/minecraft/network/chat/ComponentSerialization.java
+@@ -34,7 +_,10 @@
+ import net.minecraft.util.GsonHelper;
+ 
+ public class ComponentSerialization {
+-    public static final Codec<Component> CODEC = Codec.recursive("Component", ComponentSerialization::createCodec);
++    // Scissors start - Reject components with excessive translatable expansion
++    public static final Codec<Component> CODEC = Codec.<Component>recursive("Component", ComponentSerialization::createCodec)
++        .validate(ComponentSerialization::validate);
++    // Scissors end - Reject components with excessive translatable expansion
+     public static final StreamCodec<RegistryFriendlyByteBuf, Component> STREAM_CODEC = createTranslationAware(net.minecraft.nbt.NbtAccounter::defaultQuota); // Paper - adventure
+     public static final StreamCodec<RegistryFriendlyByteBuf, Optional<Component>> OPTIONAL_STREAM_CODEC = STREAM_CODEC.apply(ByteBufCodecs::optional);
+     // Paper start - adventure; use locale from bytebuf for translation
+@@ -123,9 +_,20 @@
+             return CODEC;
+         }
+         return LOCALIZED_CODECS.computeIfAbsent(locale,
+-            loc -> Codec.recursive("Component", selfCodec -> createCodec(selfCodec, loc)));
++            // Scissors start - Reject components with excessive translatable expansion
++            loc -> Codec.<Component>recursive("Component", selfCodec -> createCodec(selfCodec, loc))
++                .validate(ComponentSerialization::validate));
++            // Scissors end - Reject components with excessive translatable expansion
+     }
+     // Paper end - adventure; create separate codec for each locale
++
++    // Scissors start - Reject components with excessive translatable expansion
++    private static DataResult<Component> validate(final Component component) {
++        return TranslatableContents.isWithinVisitLimit(component)
++            ? DataResult.success(component)
++            : DataResult.error(() -> "Component contains too many expanded translatable parts");
++    }
++    // Scissors end - Reject components with excessive translatable expansion
+ 
+     private static Codec<Component> createCodec(final Codec<Component> topSerializer) {
+         // Paper start - adventure; create separate codec for each locale

@@ -1,0 +1,179 @@
+--- a/net/minecraft/network/chat/contents/TranslatableContents.java
++++ b/net/minecraft/network/chat/contents/TranslatableContents.java
+@@ -51,6 +_,9 @@
+     private @Nullable Language decomposedWith;
+     private List<FormattedText> decomposedParts = ImmutableList.of();
+     private static final Pattern FORMAT_PATTERN = Pattern.compile("%(?:(\\d+)\\$)?([A-Za-z%]|$)");
++    private static final int MAX_VISITED_PARTS = 4096;
++    private static final ThreadLocal<VisitContext> VISIT_CONTEXT = new ThreadLocal<>();
++    private static final VisitLimitExceeded VISIT_LIMIT_EXCEEDED = new VisitLimitExceeded();
+ 
+     private static DataResult<Object> filterAllowedArguments(final @Nullable Object result) {
+         return !isAllowedPrimitiveArgument(result) ? DataResult.error(() -> "This value needs to be parsed as component") : DataResult.success(result);
+@@ -163,62 +_,119 @@
+ 
+     @Override
+     public <T> Optional<T> visit(final FormattedText.StyledContentConsumer<T> output, final Style currentStyle) {
+-        this.decompose();
+-
+-        for (FormattedText part : this.decomposedParts) {
+-            Optional<T> result = part.visit(output, currentStyle);
+-            if (result.isPresent()) {
+-                return result;
+-            }
+-        }
+-
+-        return Optional.empty();
++        // Scissors start - Bound translatable component expansion
++        VisitContext context = VISIT_CONTEXT.get();
++        boolean rootVisit = context == null;
++        if (rootVisit) {
++            context = new VisitContext(false);
++            VISIT_CONTEXT.set(context);
++        }
++
++        try {
++            this.decompose();
++
++            for (FormattedText part : this.decomposedParts) {
++                if (!context.tryVisit()) {
++                    return output.accept(currentStyle, "...");
++                }
++
++                Optional<T> result = part.visit(output, currentStyle);
++                if (result.isPresent()) {
++                    return result;
++                }
++            }
++
++            return Optional.empty();
++        } finally {
++            if (rootVisit) {
++                VISIT_CONTEXT.remove();
++            }
++        }
++        // Scissors end - Bound translatable component expansion
+     }
+ 
+     @Override
+     public <T> Optional<T> visit(final FormattedText.ContentConsumer<T> output) {
+-        // Paper start - Count visited parts
+-        try {
+-            return this.visit(new TranslatableContentConsumer<>(output));
+-        } catch (IllegalArgumentException ignored) {
+-            return output.accept("...");
+-        }
+-    }
+-
+-    private <T> Optional<T> visit(TranslatableContentConsumer<T> output) {
+-        // Paper end - Count visited parts
+-        this.decompose();
+-
+-        for (FormattedText part : this.decomposedParts) {
+-            Optional<T> result = part.visit(output);
+-            if (result.isPresent()) {
+-                return result;
+-            }
+-        }
+-
+-        return Optional.empty();
+-    }
+-
+-    // Paper start - Count visited parts
+-    private static final class TranslatableContentConsumer<T> implements FormattedText.ContentConsumer<T> {
+-        private static final IllegalArgumentException NESTED_TOO_LONG = new IllegalArgumentException("Too long");
+-
+-        private final FormattedText.ContentConsumer<T> visitor;
++        // Scissors start - Bound translatable component expansion
++        VisitContext context = VISIT_CONTEXT.get();
++        boolean rootVisit = context == null;
++        if (rootVisit) {
++            context = new VisitContext(false);
++            VISIT_CONTEXT.set(context);
++        }
++
++        try {
++            this.decompose();
++
++            for (FormattedText part : this.decomposedParts) {
++                if (!context.tryVisit()) {
++                    return output.accept("...");
++                }
++
++                Optional<T> result = part.visit(output);
++                if (result.isPresent()) {
++                    return result;
++                }
++            }
++
++            return Optional.empty();
++        } finally {
++            if (rootVisit) {
++                VISIT_CONTEXT.remove();
++            }
++        }
++        // Scissors end - Bound translatable component expansion
++    }
++
++    // Scissors start - Bound translatable component expansion
++    public static boolean isWithinVisitLimit(final Component component) {
++        VisitContext previousContext = VISIT_CONTEXT.get();
++        boolean reuseValidationContext = previousContext != null && previousContext.failOnLimit;
++        if (!reuseValidationContext) {
++            VISIT_CONTEXT.set(new VisitContext(true));
++        }
++
++        try {
++            component.visit((style, contents) -> Optional.empty(), Style.EMPTY);
++            return true;
++        } catch (VisitLimitExceeded ignored) {
++            return false;
++        } finally {
++            if (!reuseValidationContext) {
++                if (previousContext == null) {
++                    VISIT_CONTEXT.remove();
++                } else {
++                    VISIT_CONTEXT.set(previousContext);
++                }
++            }
++        }
++    }
++
++    private static final class VisitContext {
++        private final boolean failOnLimit;
+         private int visited;
+ 
+-        private TranslatableContentConsumer(final FormattedText.ContentConsumer<T> visitor) {
+-            this.visitor = visitor;
++        private VisitContext(final boolean failOnLimit) {
++            this.failOnLimit = failOnLimit;
+         }
+ 
+-        @Override
+-        public Optional<T> accept(final String asString) {
+-            if (this.visited++ > 32) {
+-                throw NESTED_TOO_LONG;
++        private boolean tryVisit() {
++            if (this.visited++ >= MAX_VISITED_PARTS) {
++                if (this.failOnLimit) {
++                    throw VISIT_LIMIT_EXCEEDED;
++                }
++                return false;
+             }
+-            return this.visitor.accept(asString);
+-        }
+-    }
+-    // Paper end - Count visited parts
++            return true;
++        }
++    }
++
++    private static final class VisitLimitExceeded extends RuntimeException {
++        private VisitLimitExceeded() {
++            super(null, null, false, false);
++        }
++    }
++    // Scissors end - Bound translatable component expansion
+ 
+     @Override
+     public MutableComponent resolve(final ResolutionContext context, final int recursionDepth) throws CommandSyntaxException {
