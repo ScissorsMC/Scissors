@@ -8,6 +8,22 @@ files produced by applying patches are development worktrees, not the repository
 Read this file before changing code. Human setup and build instructions are in
 `README.md`.
 
+## Objective: eliminate exploits, do not soften them
+
+Scissors exists to prevent exploit payloads from crashing clients or the server. A fix is complete only when the
+malicious data is eliminated: stripped, discarded, or refused at the server boundary so it can never reach a client or
+take effect. Making a failure look nicer is not a fix. Kicking the sender with a vague error, catching an exception
+around a crash, or letting clients cope with bad data on their own all leave the payload alive and are incomplete.
+
+Hold every exploit fix to these outcomes:
+
+- Malicious data arriving from a client is discarded or sanitized where it enters, and the connection of a player who
+  merely carries a bad item survives.
+- Data already in world or player storage is sanitized before the server sends it, so pre-existing bad items cannot
+  crash the clients that receive them.
+- Strip the invalid part and keep the valid remainder when possible, rather than rejecting the whole interaction.
+- The server logs what was eliminated and why, so operators can identify abuse without guessing at vague errors.
+
 ## Version-scoped learnings
 
 Before revisiting an exploit or subsystem, read `learnings/README.md` and the directory matching the exact `mcVersion`.
@@ -119,14 +135,16 @@ Use a file patch for a focused change to an existing upstream file.
 
 Common task pairs are:
 
-| Layer        | Fix up file patches           | Rebuild patches             |
-|--------------|-------------------------------|-----------------------------|
-| API          | `fixupPaperApiFilePatches`    | `rebuildPaperPatches`       |
-| Paper server | `fixupPaperServerFilePatches` | `rebuildPaperServerPatches` |
-| Minecraft    | `fixupMinecraftFilePatches`   | `rebuildMinecraftPatches`   |
+| Layer        | Fix up file patches            | Rebuild patches             |
+|--------------|--------------------------------|-----------------------------|
+| API          | `fixupPaperApiFilePatches`     | `rebuildPaperPatches`       |
+| Paper server | `fixupPaperServerFilePatches`  | `rebuildPaperServerPatches` |
+| Minecraft    | `fixupMinecraftSourcePatches`  | `rebuildMinecraftPatches`   |
 
 If a task name changes with paperweight, use
-`./gradlew tasks --group patching` and select the task for the named patch set.
+`./gradlew tasks --group patching` and select the task for the named patch set. The server-side fixup tasks live in the
+server subproject and are not listed by the root patching group; find them with
+`./gradlew :scissors-server:tasks --all`.
 
 ### Feature patches
 
@@ -152,6 +170,29 @@ git -C paper-server commit
 
 Do not use a feature patch for unrelated edits. Do not hand-edit generated patches as the normal workflow; edit the
 applied source and regenerate them.
+
+### Amending an existing patch
+
+Extend an existing patch instead of creating a new one when the change belongs to the same logical fix.
+
+File patches need no special amend step: edit the applied file again and rerun that layer's fixup task. Every file
+patch in a layer lives in the same `file` commit, so the fixup folds the new change in and the rebuild regenerates the
+per-file `.patch` content. This is also the way to extend an existing fix to an additional upstream file in the same
+layer.
+
+To amend an existing feature patch, rewrite its commit in the nested worktree:
+
+1. Edit the applied worktree and stage only the intended files.
+2. If the feature commit is the tip of the nested worktree, run `git commit --amend --no-edit`, or drop `--no-edit`
+   when the patch message must change. Otherwise, autosquash a fixup commit into it non-interactively:
+
+   ```shell
+   git -C paper-server commit --fixup <feature-commit-sha>
+   git -C paper-server -c sequence.editor=: rebase -i --autosquash <feature-commit-sha>~1
+   ```
+
+3. Rebuild the applicable patch set and review the regenerated patch under `features/` from the repository root; the
+   diff should show only the intended amendment.
 
 ### Full patch regeneration
 

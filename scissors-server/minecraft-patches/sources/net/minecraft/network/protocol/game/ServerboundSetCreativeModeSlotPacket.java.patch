@@ -1,0 +1,40 @@
+--- a/net/minecraft/network/protocol/game/ServerboundSetCreativeModeSlotPacket.java
++++ b/net/minecraft/network/protocol/game/ServerboundSetCreativeModeSlotPacket.java
+@@ -8,10 +_,36 @@
+ import net.minecraft.world.item.ItemStack;
+ 
+ public record ServerboundSetCreativeModeSlotPacket(short slotNum, ItemStack itemStack) implements Packet<ServerGamePacketListener> {
++    // Scissors start - eliminate undecodable creative items instead of killing the connection
++    private static final org.slf4j.Logger LOGGER = com.mojang.logging.LogUtils.getLogger();
++    private static final StreamCodec<RegistryFriendlyByteBuf, ItemStack> ITEM_STREAM_CODEC =
++        ItemStack.validatedStreamCodec(ItemStack.OPTIONAL_UNTRUSTED_STREAM_CODEC).apply(ByteBufCodecs::trackDepth); // Paper - Track codec depth
++    private static final StreamCodec<RegistryFriendlyByteBuf, ItemStack> LENIENT_ITEM_STREAM_CODEC = new StreamCodec<>() {
++        @Override
++        public ItemStack decode(final RegistryFriendlyByteBuf input) {
++            try {
++                return ITEM_STREAM_CODEC.decode(input);
++            } catch (final Exception exception) {
++                input.readerIndex(input.writerIndex()); // the remainder of the frame is unusable after a failed decode
++                String reason = String.valueOf(exception.getMessage());
++                if (reason.length() > 256) {
++                    reason = reason.substring(0, 256) + "...";
++                }
++                LOGGER.warn("Discarding creative inventory item that failed to decode: {}", reason);
++                return ItemStack.EMPTY;
++            }
++        }
++
++        @Override
++        public void encode(final RegistryFriendlyByteBuf output, final ItemStack itemStack) {
++            ITEM_STREAM_CODEC.encode(output, itemStack);
++        }
++    };
++    // Scissors end - eliminate undecodable creative items instead of killing the connection
+     public static final StreamCodec<RegistryFriendlyByteBuf, ServerboundSetCreativeModeSlotPacket> STREAM_CODEC = StreamCodec.composite(
+         ByteBufCodecs.SHORT,
+         ServerboundSetCreativeModeSlotPacket::slotNum,
+-        ItemStack.validatedStreamCodec(ItemStack.OPTIONAL_UNTRUSTED_STREAM_CODEC).apply(ByteBufCodecs::trackDepth), // Paper - Track codec depth
++        LENIENT_ITEM_STREAM_CODEC, // Scissors - eliminate undecodable creative items instead of killing the connection
+         ServerboundSetCreativeModeSlotPacket::itemStack,
+         ServerboundSetCreativeModeSlotPacket::new
+     );

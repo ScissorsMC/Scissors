@@ -7,10 +7,10 @@ Cover malformed item templates in bundle contents so strict validation cannot re
 
 diff --git a/src/test/java/io/papermc/paper/item/ItemStackValidationTest.java b/src/test/java/io/papermc/paper/item/ItemStackValidationTest.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..78cc1a76f8983c197c110e586bdd63915fa91719
+index 0000000000000000000000000000000000000000..f0badc65be939d22e0e3874e01a8875636f8fff1
 --- /dev/null
 +++ b/src/test/java/io/papermc/paper/item/ItemStackValidationTest.java
-@@ -0,0 +1,30 @@
+@@ -0,0 +1,54 @@
 +package io.papermc.paper.item;
 +
 +import java.util.List;
@@ -23,21 +23,45 @@ index 0000000000000000000000000000000000000000..78cc1a76f8983c197c110e586bdd6391
 +import org.bukkit.support.environment.AllFeatures;
 +import org.junit.jupiter.api.Test;
 +
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertSame;
 +import static org.junit.jupiter.api.Assertions.assertTrue;
 +
 +@AllFeatures
 +class ItemStackValidationTest {
 +
++    private static final ItemStackTemplate INVALID_HOE = new ItemStackTemplate(
++        Items.NETHERITE_HOE,
++        DataComponentPatch.builder().set(DataComponents.MAX_STACK_SIZE, 69).build()
++    );
++    private static final ItemStackTemplate VALID_DIAMOND = new ItemStackTemplate(Items.DIAMOND, 3);
++
 +    @Test
 +    void rejectsInvalidItemInBundle() {
-+        final ItemStackTemplate invalidHoe = new ItemStackTemplate(
-+            Items.NETHERITE_HOE,
-+            DataComponentPatch.builder().set(DataComponents.MAX_STACK_SIZE, 69).build()
-+        );
 +        final ItemStack bundle = new ItemStack(Items.BUNDLE);
-+        bundle.set(DataComponents.BUNDLE_CONTENTS, new BundleContents(List.of(invalidHoe)));
++        bundle.set(DataComponents.BUNDLE_CONTENTS, new BundleContents(List.of(INVALID_HOE)));
 +        bundle.set(DataComponents.MAX_STACK_SIZE, 99);
 +
 +        assertTrue(ItemStack.validateStrict(bundle).isError());
 +    }
++
++    @Test
++    void sanitizeBundleContentsRemovesInvalidEntries() {
++        final ItemStack bundle = new ItemStack(Items.BUNDLE);
++        bundle.set(DataComponents.BUNDLE_CONTENTS, new BundleContents(List.of(INVALID_HOE, VALID_DIAMOND)));
++
++        final ItemStack sanitized = ItemStack.sanitizeBundleContents(bundle);
++
++        assertEquals(List.of(VALID_DIAMOND), sanitized.get(DataComponents.BUNDLE_CONTENTS).items());
++        assertEquals(2, bundle.get(DataComponents.BUNDLE_CONTENTS).items().size());
++    }
++
++    @Test
++    void sanitizeBundleContentsKeepsValidBundles() {
++        final ItemStack bundle = new ItemStack(Items.BUNDLE);
++        bundle.set(DataComponents.BUNDLE_CONTENTS, new BundleContents(List.of(VALID_DIAMOND)));
++
++        assertSame(bundle, ItemStack.sanitizeBundleContents(bundle));
++    }
++
 +}

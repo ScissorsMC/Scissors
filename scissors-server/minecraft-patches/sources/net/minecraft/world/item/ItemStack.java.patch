@@ -1,5 +1,14 @@
 --- a/net/minecraft/world/item/ItemStack.java
 +++ b/net/minecraft/world/item/ItemStack.java
+@@ -195,7 +_,7 @@
+                     boolean prev = net.minecraft.network.chat.ComponentSerialization.DONT_RENDER_TRANSLATABLES.get();
+                     try (final io.papermc.paper.util.SafeAutoClosable ignored = io.papermc.paper.util.sanitizer.ItemObfuscationSession.withContext(c -> c.itemStack(itemStack))) { // pass the itemstack as context to the obfuscation session
+                         net.minecraft.network.chat.ComponentSerialization.DONT_RENDER_TRANSLATABLES.set(true);
+-                    patchCodec.encode(output, itemStack.components.asPatch());
++                    patchCodec.encode(output, sanitizeBundleContents(itemStack).components.asPatch()); // Scissors - eliminate invalid bundle entries before they reach clients
+                     } finally {
+                         net.minecraft.network.chat.ComponentSerialization.DONT_RENDER_TRANSLATABLES.set(prev);
+                     }
 @@ -281,14 +_,14 @@
          this.components = new PatchedDataComponentMap(DataComponentMap.EMPTY);
      }
@@ -51,3 +60,44 @@
              int itemCount = item.count();
              int maxStackSize = item.getMaxStackSize();
              if (itemCount > maxStackSize) {
+@@ -329,6 +_,40 @@
+ 
+         return DataResult.success(Unit.INSTANCE);
+     }
++
++    // Scissors start - eliminate invalid bundle entries before they reach clients
++    /**
++     * Returns a copy of the stack whose bundle contents omit entries that fail contained-item validation. The vanilla
++     * client turns such entries into empty stacks and then crashes in {@code BundleContents$Mutable#toImmutable} when
++     * the bundle is hovered, so they must never be sent. Returns the same stack when nothing needs to be removed.
++     */
++    public static ItemStack sanitizeBundleContents(final ItemStack itemStack) {
++        BundleContents bundle = itemStack.get(DataComponents.BUNDLE_CONTENTS);
++        if (bundle == null) {
++            return itemStack;
++        }
++
++        List<ItemStackTemplate> items = bundle.items();
++        List<ItemStackTemplate> validItems = null;
++        for (int i = 0; i < items.size(); i++) {
++            ItemStackTemplate item = items.get(i);
++            boolean valid = !validateComponents(item).isError() && item.count() <= item.getMaxStackSize();
++            if (!valid && validItems == null) {
++                validItems = new java.util.ArrayList<>(items.subList(0, i));
++            } else if (valid && validItems != null) {
++                validItems.add(item);
++            }
++        }
++
++        if (validItems == null) {
++            return itemStack;
++        }
++
++        ItemStack sanitized = itemStack.copy();
++        sanitized.set(DataComponents.BUNDLE_CONTENTS, new BundleContents(List.copyOf(validItems)));
++        return sanitized;
++    }
++    // Scissors end - eliminate invalid bundle entries before they reach clients
+ 
+     public boolean isEmpty() {
+         return this == EMPTY || this.item.value() == Items.AIR || this.count <= 0;

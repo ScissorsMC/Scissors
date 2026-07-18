@@ -64,19 +64,32 @@ index bef2c6b6cbd5663d058147d1c7b6dbaf2cc66d3c..6e9aee2aa11f0857607d8e8861950261
      public static final ANSIComponentSerializer ANSI_SERIALIZER = ANSIComponentSerializer.builder().flattener(FLATTENER).build();
 diff --git a/src/test/java/io/papermc/paper/adventure/DecimatorTest.java b/src/test/java/io/papermc/paper/adventure/DecimatorTest.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..116a337805d4a5d6216688318def9626bb0d4fdc
+index 0000000000000000000000000000000000000000..acb24f095064b8cc53949ea02c94d0f10b8c78ab
 --- /dev/null
 +++ b/src/test/java/io/papermc/paper/adventure/DecimatorTest.java
-@@ -0,0 +1,66 @@
+@@ -0,0 +1,134 @@
 +package io.papermc.paper.adventure;
 +
 +import com.mojang.serialization.JsonOps;
++import io.netty.buffer.Unpooled;
 +import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
++import net.minecraft.core.component.DataComponentType;
++import net.minecraft.core.component.DataComponents;
++import net.minecraft.nbt.CompoundTag;
++import net.minecraft.nbt.ListTag;
++import net.minecraft.nbt.Tag;
++import net.minecraft.network.RegistryFriendlyByteBuf;
 +import net.minecraft.network.chat.Component;
 +import net.minecraft.network.chat.ComponentSerialization;
++import net.minecraft.network.codec.ByteBufCodecs;
++import net.minecraft.network.protocol.game.ServerboundSetCreativeModeSlotPacket;
++import net.minecraft.world.item.Item;
++import net.minecraft.world.item.Items;
++import org.bukkit.support.RegistryHelper;
 +import org.bukkit.support.environment.VanillaFeature;
 +import org.junit.jupiter.api.Test;
 +
++import static org.junit.jupiter.api.Assertions.assertEquals;
 +import static org.junit.jupiter.api.Assertions.assertFalse;
 +import static org.junit.jupiter.api.Assertions.assertTrue;
 +
@@ -116,6 +129,61 @@ index 0000000000000000000000000000000000000000..116a337805d4a5d6216688318def9626
 +
 +        assertTrue(flattened.endsWith("..."));
 +        assertTrue(flattened.length() < 20_000);
++    }
++
++    @Test
++    void discardsUndecodableCreativeItems() {
++        final RegistryFriendlyByteBuf buf = creativeSlotPacket(decimatorCustomName());
++
++        final ServerboundSetCreativeModeSlotPacket packet = ServerboundSetCreativeModeSlotPacket.STREAM_CODEC.decode(buf);
++
++        assertTrue(packet.itemStack().isEmpty());
++        assertEquals(0, buf.readableBytes());
++    }
++
++    @Test
++    void decodesValidCreativeItems() {
++        final CompoundTag name = new CompoundTag();
++        name.putString("text", "totally fine");
++        final RegistryFriendlyByteBuf buf = creativeSlotPacket(name);
++
++        final ServerboundSetCreativeModeSlotPacket packet = ServerboundSetCreativeModeSlotPacket.STREAM_CODEC.decode(buf);
++
++        assertTrue(packet.itemStack().is(Items.STONE));
++        assertTrue(packet.itemStack().has(DataComponents.CUSTOM_NAME));
++        assertEquals(0, buf.readableBytes());
++    }
++
++    // Encodes the wire form of a creative slot packet holding one stone with a raw custom_name tag, bypassing the
++    // server-side codecs so payloads the server itself refuses to encode can still be fed to the decoder.
++    private static RegistryFriendlyByteBuf creativeSlotPacket(final Tag customName) {
++        final RegistryFriendlyByteBuf buf = new RegistryFriendlyByteBuf(Unpooled.buffer(), RegistryHelper.registryAccess());
++        buf.writeShort(36);
++        buf.writeVarInt(1); // stack count
++        Item.STREAM_CODEC.encode(buf, Items.STONE.builtInRegistryHolder());
++        buf.writeVarInt(1); // added components
++        buf.writeVarInt(0); // removed components
++        DataComponentType.STREAM_CODEC.encode(buf, DataComponents.CUSTOM_NAME);
++        final RegistryFriendlyByteBuf payload = new RegistryFriendlyByteBuf(Unpooled.buffer(), RegistryHelper.registryAccess());
++        ByteBufCodecs.TRUSTED_TAG.encode(payload, customName);
++        buf.writeVarInt(payload.readableBytes());
++        buf.writeBytes(payload);
++        return buf;
++    }
++
++    private static Tag decimatorCustomName() {
++        CompoundTag tag = new CompoundTag();
++        tag.putString("text", "ouch");
++        for (int i = 0; i < 13; i++) {
++            final CompoundTag outer = new CompoundTag();
++            outer.putString("translate", "%s%s");
++            final ListTag with = new ListTag();
++            with.add(tag);
++            with.add(tag.copy());
++            outer.put("with", with);
++            tag = outer;
++        }
++        return tag;
 +    }
 +
 +    private static Component nestedVanillaComponent(final int depth) {
