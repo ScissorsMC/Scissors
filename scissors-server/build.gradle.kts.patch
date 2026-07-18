@@ -4,16 +4,16 @@
      minecraftVersion = providers.gradleProperty("mcVersion")
      gitFilePatches = false
  
-+    val fork = forks.register("fork") {
++    val scissors = forks.register("scissors") {
 +        upstream.patchDir("paperServer") {
 +            upstreamPath = "paper-server"
 +            excludes = setOf("src/minecraft", "patches", "build.gradle.kts")
-+            patchesDir = rootDirectory.dir("fork-server/paper-patches")
++            patchesDir = rootDirectory.dir("scissors-server/paper-patches")
 +            outputDir = rootDirectory.dir("paper-server")
 +        }
 +    }
 +
-+    activeFork = fork
++    activeFork = scissors
 +
      updatingMinecraft {
          // oldPaperCommit = "d4fe85375af18bfa88f44d7c1e6a61904ae550cc"
@@ -45,10 +45,30 @@
  
  dependencies {
 -    implementation(project(":paper-api"))
-+    implementation(project(":fork-api"))
++    implementation(project(":scissors-api"))
      implementation("ca.spottedleaf:leafpile:1.0.0")
      implementation("org.jline:jline-terminal-ffm:3.27.1") // use ffm on java 22+
      implementation("org.jline:jline-terminal-jni:3.27.1") // fall back to jni on java 21
+@@ -170,14 +_,14 @@
+         val gitBranch = git.exec(providers, "rev-parse", "--abbrev-ref", "HEAD").get().trim()
+         attributes(
+             "Main-Class" to "org.bukkit.craftbukkit.Main",
+-            "Implementation-Title" to "Paper",
++            "Implementation-Title" to "Scissors",
+             "Implementation-Version" to implementationVersion,
+             "Implementation-Vendor" to date,
+-            "Specification-Title" to "Paper",
++            "Specification-Title" to "Scissors",
+             "Specification-Version" to project.version,
+-            "Specification-Vendor" to "Paper Team",
+-            "Brand-Id" to "papermc:paper",
+-            "Brand-Name" to "Paper",
++            "Specification-Vendor" to "ScissorsMC Team",
++            "Brand-Id" to "scissorsmc:scissors",
++            "Brand-Name" to "Scissors",
+             "Build-Number" to (build ?: ""),
+             "Build-Time" to buildTime.toString(),
+             "Git-Branch" to gitBranch,
 @@ -246,7 +_,7 @@
      jvmArgumentProviders.add(provider)
  }
@@ -58,3 +78,12 @@
  idea {
      module {
          generatedSourceDirs.add(generatedDir.toFile())
+@@ -325,7 +_,7 @@
+ }
+ 
+ fill {
+-    project("paper")
++    project("scissors")
+     versionFamily(paperweight.minecraftVersion.map { it.split(".", "-").takeWhile { part -> part.toIntOrNull() != null }.take(2).joinToString(".") })
+     version(paperweight.minecraftVersion)
+ 

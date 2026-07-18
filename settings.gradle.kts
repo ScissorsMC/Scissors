@@ -9,9 +9,9 @@ plugins {
     id("org.gradle.toolchains.foojay-resolver-convention") version "1.0.0"
 }
 
-rootProject.name = "fork"
+rootProject.name = "scissors"
 
-for (name in listOf("fork-api", "fork-server")) {
+for (name in listOf("scissors-api", "scissors-server")) {
     include(name)
     file(name).mkdirs()
 }
@@ -36,12 +36,12 @@ fun optionalInclude(name: String, op: (ProjectDescriptor.() -> Unit)? = null) {
 
 gradle.lifecycle.beforeProject {
     val mcVersion = providers.gradleProperty("mcVersion").get().trim()
-    val paperVersionChannel = providers.gradleProperty("channel").get().trim()
-    val paperBuildNumber = providers.environmentVariable("BUILD_NUMBER").orNull?.trim()?.toInt()
-    val versionString = if (paperBuildNumber == null) {
+    val scissorsVersionChannel = providers.gradleProperty("channel").get().trim()
+    val scissorsBuildNumber = providers.environmentVariable("BUILD_NUMBER").orNull?.trim()?.toInt()
+    val versionString = if (scissorsBuildNumber == null) {
         "$mcVersion.local-SNAPSHOT"
     } else {
-        "$mcVersion.build.$paperBuildNumber-${paperVersionChannel.lowercase()}"
+        "$mcVersion.build.$scissorsBuildNumber-${scissorsVersionChannel.lowercase()}"
     }
     version = versionString
 }
