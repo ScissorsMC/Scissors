@@ -12,7 +12,7 @@ Gradle can provision the Java 25 toolchain when run with Java 21 or newer.
 git clone https://github.com/ScissorsMC/Scissors.git
 cd Scissors
 ./gradlew applyAllPatches
-./gradlew build
+./gradlew :scissors-server:createPaperclipJar
 ```
 
 On Windows, enable Git long-path support before applying patches:
@@ -25,11 +25,18 @@ Then use:
 
 ```powershell
 .\gradlew.bat applyAllPatches
-.\gradlew.bat build
+.\gradlew.bat :scissors-server:createPaperclipJar
 ```
 
-Build outputs are written under `scissors-api/build/libs` and
-`scissors-server/build/libs`.
+The runnable server is written to
+`scissors-server/build/libs/scissors-paperclip-<version>.jar`. The
+`scissors-server-<version>.jar` in the same directory is a thin development
+JAR and does not include the runtime dependencies required to start the
+server.
+
+Contributors can run `./gradlew build` (or `.\gradlew.bat build` on Windows)
+to compile all modules and run the test suite. This verification task does not
+create the runnable Paperclip JAR.
 
 ## Development
 

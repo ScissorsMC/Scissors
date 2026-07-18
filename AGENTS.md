@@ -190,6 +190,16 @@ Use the narrowest relevant check first, then verify the complete patch state:
 For documentation-only changes, patch application is sufficient when the build configuration did not change. For build,
 API, server, or Minecraft changes, run the build.
 
+The `build` task verifies the modules but does not create a standalone server. When a task changes distribution packaging
+or requires a runnable artifact, also run:
+
+```shell
+./gradlew :scissors-server:createPaperclipJar
+```
+
+The deployable artifact is `scissors-server/build/libs/scissors-paperclip-<version>.jar`.
+`scissors-server-<version>.jar` is a thin development JAR and must not be used as a standalone server.
+
 After verification:
 
 1. Run `git status --short`.
