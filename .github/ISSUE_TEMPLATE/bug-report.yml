@@ -1,0 +1,113 @@
+name: Bug report
+description: Report a bug in Scissors that does NOT occur on unmodified Paper.
+title: "[Bug]: "
+labels: ["bug", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Scissors is a fork of Paper. A bug that also happens on an unmodified Paper
+        server of the same version is an **upstream Paper bug**, not a Scissors bug —
+        report those to [PaperMC](https://github.com/PaperMC/Paper/issues) instead.
+
+        This form is only for bugs introduced by Scissors. You must show the bug
+        reproduces on Scissors **and does not** reproduce on unmodified Paper.
+  - type: input
+    id: mc-version
+    attributes:
+      label: Minecraft version
+      description: The exact `mcVersion` you tested against (see `gradle.properties`).
+      placeholder: "26.2"
+    validations:
+      required: true
+  - type: input
+    id: scissors-version
+    attributes:
+      label: Scissors version / commit
+      description: The Scissors release or commit SHA where you see the bug.
+      placeholder: "e.g. ecaf85b, or the paperclip jar version"
+    validations:
+      required: true
+  - type: input
+    id: paper-version
+    attributes:
+      label: Paper version tested against
+      description: The unmodified Paper build you confirmed the bug does NOT occur on. Must be the same Minecraft version.
+      placeholder: "e.g. Paper 1.21.x build 123 (mcVersion 26.2)"
+    validations:
+      required: true
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: One or two sentences describing the bug.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: Exact steps a maintainer can follow to see the bug on Scissors.
+      placeholder: |
+        1. ...
+        2. ...
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: paper-evidence
+    attributes:
+      label: Evidence it does NOT happen on unmodified Paper
+      description: >
+        Irrefutable proof this is Scissors-specific. Run the exact same steps on an
+        unmodified Paper server of the same Minecraft version and show the different
+        result. Provide concrete evidence: a video or screenshots of both runs
+        side by side, console logs from both servers, or a clear step-by-step
+        comparison. "I think it's Scissors" is not enough — reports without this
+        will be closed.
+      placeholder: |
+        Paper build & version tested:
+        Same steps on Paper produced: ...
+        Attached: paper-run.mp4 / paper-console.log, scissors-run.mp4 / scissors-console.log
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / stack trace (Scissors)
+      description: Relevant server console output or stack trace from Scissors. Automatically formatted, no backticks needed.
+      render: text
+    validations:
+      required: false
+  - type: textarea
+    id: plugins
+    attributes:
+      label: Plugins
+      description: List installed plugins, or state that the bug reproduces with no plugins loaded (strongly preferred).
+    validations:
+      required: false
+  - type: checkboxes
+    id: confirmations
+    attributes:
+      label: Confirmations
+      options:
+        - label: I searched existing issues and this bug has not already been reported.
+          required: true
+        - label: I tested the same Minecraft version on both Scissors and unmodified Paper.
+          required: true
+        - label: I confirmed the bug does NOT occur on unmodified Paper, and provided evidence above.
+          required: true
+        - label: This is a bug report, not a crash/exploit. Security findings go through the exploit finding form.
+          required: true

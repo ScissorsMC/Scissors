@@ -31,9 +31,15 @@ receives it.
 
 1. `ServerGamePacketListenerImpl.handleSetCreativeModeSlot` folds `ItemStack.validateStrict(...).isSuccess()` into
    `validData`, so invalid stacks are refused for both slot placement and the drop path.
-2. `ItemStack.sanitizeBundleContents` (called from the network encode in `createOptionalStreamCodec`) removes bundle
-   entries that fail contained-item validation from every outgoing stack, covering pre-existing items in storage. It
-   returns the original stack untouched when nothing needs removal, and never mutates server-side data.
+2. `ItemStack.MAP_CODEC` sanitizes on decode, so any stack deserialized from player data, world data, loot, or
+   commands has invalid bundle entries removed immediately (with one warn naming the item), and the next save persists
+   the clean stack. Wire-only filtering left the stored payload alive and the discard only became visible per send.
+3. `ItemStack.sanitizeBundleContents` also runs in the network encode in `createOptionalStreamCodec` as defense in
+   depth for stacks created at runtime (plugins, API). It returns the original stack untouched when nothing needs
+   removal.
+
+When referencing `LOGGER` from the `MAP_CODEC` field initializer, qualify it as `ItemStack.LOGGER`; the field is
+declared later in the class and a simple name there is an illegal forward reference.
 
 ## Related lessons
 

@@ -1,5 +1,23 @@
 --- a/net/minecraft/world/item/ItemStack.java
 +++ b/net/minecraft/world/item/ItemStack.java
+@@ -115,7 +_,16 @@
+                     ExtraCodecs.optionalAlwaysPresentFieldOf(ExtraCodecs.intRange(1, 99), "count", 1).forGetter(ItemStack::getCount),
+                     DataComponentPatch.CODEC.optionalFieldOf("components", DataComponentPatch.EMPTY).forGetter(s -> s.components.asPatch())
+                 )
+-                .apply(i, ItemStack::new)
++                // Scissors start - eliminate invalid bundle entries when a stack is deserialized
++                .apply(i, (item, count, patch) -> {
++                    ItemStack decoded = new ItemStack(item, count, patch);
++                    ItemStack sanitized = sanitizeBundleContents(decoded);
++                    if (sanitized != decoded) {
++                        ItemStack.LOGGER.warn("Removed invalid bundle entries from {} while loading it", item.getRegisteredName());
++                    }
++                    return sanitized;
++                })
++                // Scissors end - eliminate invalid bundle entries when a stack is deserialized
+         )
+     );
+     public static final Codec<ItemStack> CODEC = Codec.lazyInitialized(MAP_CODEC::codec);
 @@ -195,7 +_,7 @@
                      boolean prev = net.minecraft.network.chat.ComponentSerialization.DONT_RENDER_TRANSLATABLES.get();
                      try (final io.papermc.paper.util.SafeAutoClosable ignored = io.papermc.paper.util.sanitizer.ItemObfuscationSession.withContext(c -> c.itemStack(itemStack))) { // pass the itemstack as context to the obfuscation session
