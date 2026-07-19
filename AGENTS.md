@@ -24,6 +24,24 @@ Hold every exploit fix to these outcomes:
 - Strip the invalid part and keep the valid remainder when possible, rather than rejecting the whole interaction.
 - The server logs what was eliminated and why, so operators can identify abuse without guessing at vague errors.
 
+### Patch the root cause, not the reported instance
+
+Assume the people who exploit these bugs are ruthless and will probe every path around a partial fix. A patch that only
+covers the one vector you were shown will be re-exploited through the next one — a different packet, a different
+component, a different code path that reaches the same sink. That is not a hypothetical; it is the default outcome.
+
+- Find the class of bug, not the single case. If a malformed bundle crashes clients, ask what else carries nested items
+  (containers, charged projectiles, any component the authoritative validator recurses into) and cover all of them.
+- Fix at the narrowest point that every variant must pass through. Prefer a single authoritative chokepoint (for
+  example, the outgoing item encode that every client-bound stack funnels through) over sprinkling checks at each
+  call site. Before trusting a chokepoint, verify nothing bypasses it.
+- Enumerate every ingress and egress for the payload: how it enters (packets, commands, NBT, plugins, world load), how
+  it is stored, and how it leaves toward a client. A path you leave uncovered is a path that gets found.
+- Never ship a fix with a known-but-unpatched hole and a note describing it. Documenting the gap hands the exploiter a
+  map. Close it, or if it genuinely cannot be closed yet, treat that as an open vulnerability, not a finished patch.
+- Match the mindset of the attacker, not the reporter: the reporter shows you one way in; the attacker will try all of
+  them.
+
 ## Version-scoped learnings
 
 Before revisiting an exploit or subsystem, read `learnings/README.md` and the directory matching the exact `mcVersion`.

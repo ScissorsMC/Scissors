@@ -5,16 +5,16 @@
                      DataComponentPatch.CODEC.optionalFieldOf("components", DataComponentPatch.EMPTY).forGetter(s -> s.components.asPatch())
                  )
 -                .apply(i, ItemStack::new)
-+                // Scissors start - eliminate invalid bundle entries when a stack is deserialized
++                // Scissors start - eliminate invalid nested items when a stack is deserialized
 +                .apply(i, (item, count, patch) -> {
 +                    ItemStack decoded = new ItemStack(item, count, patch);
-+                    ItemStack sanitized = sanitizeBundleContents(decoded);
++                    ItemStack sanitized = sanitizeNestedItems(decoded);
 +                    if (sanitized != decoded) {
-+                        ItemStack.LOGGER.warn("Removed invalid bundle entries from {} while loading it", item.getRegisteredName());
++                        ItemStack.LOGGER.warn("Removed invalid nested items from {} while loading it", item.getRegisteredName());
 +                    }
 +                    return sanitized;
 +                })
-+                // Scissors end - eliminate invalid bundle entries when a stack is deserialized
++                // Scissors end - eliminate invalid nested items when a stack is deserialized
          )
      );
      public static final Codec<ItemStack> CODEC = Codec.lazyInitialized(MAP_CODEC::codec);
@@ -23,7 +23,7 @@
                      try (final io.papermc.paper.util.SafeAutoClosable ignored = io.papermc.paper.util.sanitizer.ItemObfuscationSession.withContext(c -> c.itemStack(itemStack))) { // pass the itemstack as context to the obfuscation session
                          net.minecraft.network.chat.ComponentSerialization.DONT_RENDER_TRANSLATABLES.set(true);
 -                    patchCodec.encode(output, itemStack.components.asPatch());
-+                    patchCodec.encode(output, sanitizeBundleContents(itemStack).components.asPatch()); // Scissors - eliminate invalid bundle entries before they reach clients
++                    patchCodec.encode(output, sanitizeNestedItems(itemStack).components.asPatch()); // Scissors - eliminate invalid nested items before they reach clients
                      } finally {
                          net.minecraft.network.chat.ComponentSerialization.DONT_RENDER_TRANSLATABLES.set(prev);
                      }
@@ -78,44 +78,97 @@
              int itemCount = item.count();
              int maxStackSize = item.getMaxStackSize();
              if (itemCount > maxStackSize) {
-@@ -329,6 +_,40 @@
+@@ -329,6 +_,93 @@
  
          return DataResult.success(Unit.INSTANCE);
      }
 +
-+    // Scissors start - eliminate invalid bundle entries before they reach clients
++    // Scissors start - eliminate invalid nested items before they reach clients
 +    /**
-+     * Returns a copy of the stack whose bundle contents omit entries that fail contained-item validation. The vanilla
-+     * client turns such entries into empty stacks and then crashes in {@code BundleContents$Mutable#toImmutable} when
-+     * the bundle is hovered, so they must never be sent. Returns the same stack when nothing needs to be removed.
++     * Returns a copy of the stack whose nested-item components ({@code container}, {@code bundle_contents}, and
++     * {@code charged_projectiles}) omit any entry that fails contained-item validation. These are exactly the
++     * components {@link #validateComponents} recurses into, so covering all three closes the whole class of
++     * malformed-nested-item payloads rather than one instance of it.
++     *
++     * <p>The vanilla client turns an invalid bundle entry into an empty stack and then crashes in
++     * {@code BundleContents$Mutable#toImmutable} when the bundle is hovered; the other two components carry the same
++     * kind of payload and must never be sent to a client either. Because {@code validateComponents} is itself
++     * recursive, a surviving entry is a fully valid subtree, so no manual recursion is needed here.
++     *
++     * <p>Returns the same instance when nothing needs to be removed, so this is cheap on the common path.
 +     */
-+    public static ItemStack sanitizeBundleContents(final ItemStack itemStack) {
-+        BundleContents bundle = itemStack.get(DataComponents.BUNDLE_CONTENTS);
-+        if (bundle == null) {
-+            return itemStack;
-+        }
++    public static ItemStack sanitizeNestedItems(final ItemStack itemStack) {
++        ItemStack result = itemStack;
 +
-+        List<ItemStackTemplate> items = bundle.items();
-+        List<ItemStackTemplate> validItems = null;
-+        for (int i = 0; i < items.size(); i++) {
-+            ItemStackTemplate item = items.get(i);
-+            boolean valid = !validateComponents(item).isError() && item.count() <= item.getMaxStackSize();
-+            if (!valid && validItems == null) {
-+                validItems = new java.util.ArrayList<>(items.subList(0, i));
-+            } else if (valid && validItems != null) {
-+                validItems.add(item);
++        BundleContents bundle = result.get(DataComponents.BUNDLE_CONTENTS);
++        if (bundle != null) {
++            List<ItemStackTemplate> valid = filterValidNestedItems(bundle.items());
++            if (valid != null) {
++                result = result == itemStack ? itemStack.copy() : result;
++                result.set(DataComponents.BUNDLE_CONTENTS, new BundleContents(List.copyOf(valid)));
 +            }
 +        }
 +
-+        if (validItems == null) {
-+            return itemStack;
++        ChargedProjectiles charged = result.get(DataComponents.CHARGED_PROJECTILES);
++        if (charged != null) {
++            List<ItemStackTemplate> valid = filterValidNestedItems(charged.items());
++            if (valid != null) {
++                result = result == itemStack ? itemStack.copy() : result;
++                result.set(DataComponents.CHARGED_PROJECTILES, new ChargedProjectiles(List.copyOf(valid)));
++            }
 +        }
 +
-+        ItemStack sanitized = itemStack.copy();
-+        sanitized.set(DataComponents.BUNDLE_CONTENTS, new BundleContents(List.copyOf(validItems)));
-+        return sanitized;
++        ItemContainerContents container = result.get(DataComponents.CONTAINER);
++        if (container != null) {
++            ItemContainerContents cleaned = filterValidContainer(container);
++            if (cleaned != null) {
++                result = result == itemStack ? itemStack.copy() : result;
++                result.set(DataComponents.CONTAINER, cleaned);
++            }
++        }
++
++        return result;
 +    }
-+    // Scissors end - eliminate invalid bundle entries before they reach clients
++
++    private static boolean isValidNestedItem(final ItemStackTemplate item) {
++        return !validateComponents(item).isError() && item.count() <= item.getMaxStackSize();
++    }
++
++    // Returns a filtered copy with invalid entries dropped, or null when every entry is already valid.
++    private static @Nullable List<ItemStackTemplate> filterValidNestedItems(final List<ItemStackTemplate> items) {
++        List<ItemStackTemplate> valid = null;
++        for (int i = 0; i < items.size(); i++) {
++            ItemStackTemplate item = items.get(i);
++            boolean ok = isValidNestedItem(item);
++            if (!ok && valid == null) {
++                valid = new java.util.ArrayList<>(items.subList(0, i));
++            } else if (ok && valid != null) {
++                valid.add(item);
++            }
++        }
++        return valid;
++    }
++
++    // Returns a rebuilt container with invalid slots cleared, or null when every occupied slot is already valid.
++    private static @Nullable ItemContainerContents filterValidContainer(final ItemContainerContents container) {
++        List<Optional<ItemStackTemplate>> slots = container.items;
++        List<ItemStack> rebuilt = null;
++        for (int i = 0; i < slots.size(); i++) {
++            Optional<ItemStackTemplate> slot = slots.get(i);
++            boolean ok = slot.isEmpty() || isValidNestedItem(slot.get());
++            if (!ok && rebuilt == null) {
++                rebuilt = new java.util.ArrayList<>();
++                for (int j = 0; j < i; j++) {
++                    rebuilt.add(slots.get(j).map(ItemStackTemplate::create).orElse(ItemStack.EMPTY));
++                }
++                rebuilt.add(ItemStack.EMPTY);
++            } else if (rebuilt != null) {
++                rebuilt.add(ok ? slot.map(ItemStackTemplate::create).orElse(ItemStack.EMPTY) : ItemStack.EMPTY);
++            }
++        }
++        return rebuilt == null ? null : ItemContainerContents.fromItems(rebuilt);
++    }
++    // Scissors end - eliminate invalid nested items before they reach clients
  
      public boolean isEmpty() {
          return this == EMPTY || this.item.value() == Items.AIR || this.count <= 0;

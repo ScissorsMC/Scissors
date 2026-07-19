@@ -7,7 +7,7 @@
 +            // Scissors start - eliminate invalid nested components from creative items; saved toolbars are client-side and bypass /give validation
 +            // Strip invalid bundle entries and fully reject items that are still invalid, so the crashing payload never enters the inventory.
 +            // Track whether we altered the client's item: if we did, the client is holding a copy the server does not have and must be corrected below.
-+            ItemStack sanitizedItem = ItemStack.sanitizeBundleContents(itemStack);
++            ItemStack sanitizedItem = ItemStack.sanitizeNestedItems(itemStack);
 +            if (!sanitizedItem.isEmpty() && ItemStack.validateStrict(sanitizedItem).isError()) {
 +                sanitizedItem = ItemStack.EMPTY;
 +            }

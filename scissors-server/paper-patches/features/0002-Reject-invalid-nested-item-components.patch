@@ -7,10 +7,10 @@ Cover malformed item templates in bundle contents so strict validation cannot re
 
 diff --git a/src/test/java/io/papermc/paper/item/ItemStackValidationTest.java b/src/test/java/io/papermc/paper/item/ItemStackValidationTest.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..5577fd1e15d198b4afd08043715bba2e843fdf55
+index 0000000000000000000000000000000000000000..c3df3b16f642ddb0e68e7131a5b96a64f27d6484
 --- /dev/null
 +++ b/src/test/java/io/papermc/paper/item/ItemStackValidationTest.java
-@@ -0,0 +1,70 @@
+@@ -0,0 +1,111 @@
 +package io.papermc.paper.item;
 +
 +import java.util.List;
@@ -23,11 +23,14 @@ index 0000000000000000000000000000000000000000..5577fd1e15d198b4afd08043715bba2e
 +import net.minecraft.world.item.ItemStackTemplate;
 +import net.minecraft.world.item.Items;
 +import net.minecraft.world.item.component.BundleContents;
++import net.minecraft.world.item.component.ChargedProjectiles;
++import net.minecraft.world.item.component.ItemContainerContents;
 +import org.bukkit.support.RegistryHelper;
 +import org.bukkit.support.environment.AllFeatures;
 +import org.junit.jupiter.api.Test;
 +
 +import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertFalse;
 +import static org.junit.jupiter.api.Assertions.assertSame;
 +import static org.junit.jupiter.api.Assertions.assertTrue;
 +
@@ -39,6 +42,7 @@ index 0000000000000000000000000000000000000000..5577fd1e15d198b4afd08043715bba2e
 +        DataComponentPatch.builder().set(DataComponents.MAX_STACK_SIZE, 69).build()
 +    );
 +    private static final ItemStackTemplate VALID_DIAMOND = new ItemStackTemplate(Items.DIAMOND, 3);
++    private static final ItemStackTemplate VALID_ARROW = new ItemStackTemplate(Items.ARROW, 1);
 +
 +    @Test
 +    void rejectsInvalidItemInBundle() {
@@ -50,26 +54,54 @@ index 0000000000000000000000000000000000000000..5577fd1e15d198b4afd08043715bba2e
 +    }
 +
 +    @Test
-+    void sanitizeBundleContentsRemovesInvalidEntries() {
++    void sanitizeRemovesInvalidBundleEntries() {
 +        final ItemStack bundle = new ItemStack(Items.BUNDLE);
 +        bundle.set(DataComponents.BUNDLE_CONTENTS, new BundleContents(List.of(INVALID_HOE, VALID_DIAMOND)));
 +
-+        final ItemStack sanitized = ItemStack.sanitizeBundleContents(bundle);
++        final ItemStack sanitized = ItemStack.sanitizeNestedItems(bundle);
 +
 +        assertEquals(List.of(VALID_DIAMOND), sanitized.get(DataComponents.BUNDLE_CONTENTS).items());
 +        assertEquals(2, bundle.get(DataComponents.BUNDLE_CONTENTS).items().size());
++        assertTrue(ItemStack.validateStrict(sanitized).isSuccess());
 +    }
 +
 +    @Test
-+    void sanitizeBundleContentsKeepsValidBundles() {
++    void sanitizeRemovesInvalidChargedProjectiles() {
++        final ItemStack crossbow = new ItemStack(Items.CROSSBOW);
++        crossbow.set(DataComponents.CHARGED_PROJECTILES, new ChargedProjectiles(List.of(INVALID_HOE, VALID_ARROW)));
++
++        final ItemStack sanitized = ItemStack.sanitizeNestedItems(crossbow);
++
++        assertEquals(List.of(VALID_ARROW), sanitized.get(DataComponents.CHARGED_PROJECTILES).items());
++        assertTrue(ItemStack.validateStrict(sanitized).isSuccess());
++    }
++
++    @Test
++    void sanitizeRemovesInvalidContainerEntries() {
++        final ItemStack shulker = new ItemStack(Items.SHULKER_BOX);
++        shulker.set(DataComponents.CONTAINER, ItemContainerContents.fromItems(List.of(
++            invalidHoeStack(),
++            VALID_DIAMOND.create()
++        )));
++
++        final ItemStack sanitized = ItemStack.sanitizeNestedItems(shulker);
++
++        final List<ItemStack> remaining = sanitized.get(DataComponents.CONTAINER).nonEmptyItemCopyStream().toList();
++        assertEquals(1, remaining.size());
++        assertTrue(remaining.get(0).is(Items.DIAMOND));
++        assertTrue(ItemStack.validateStrict(sanitized).isSuccess());
++    }
++
++    @Test
++    void sanitizeKeepsValidStacks() {
 +        final ItemStack bundle = new ItemStack(Items.BUNDLE);
 +        bundle.set(DataComponents.BUNDLE_CONTENTS, new BundleContents(List.of(VALID_DIAMOND)));
 +
-+        assertSame(bundle, ItemStack.sanitizeBundleContents(bundle));
++        assertSame(bundle, ItemStack.sanitizeNestedItems(bundle));
 +    }
 +
 +    @Test
-+    void deserializationRemovesInvalidBundleEntries() {
++    void deserializationRemovesInvalidNestedItems() {
 +        final ItemStack bundle = new ItemStack(Items.BUNDLE);
 +        bundle.set(DataComponents.BUNDLE_CONTENTS, new BundleContents(List.of(INVALID_HOE, VALID_DIAMOND)));
 +
@@ -78,6 +110,15 @@ index 0000000000000000000000000000000000000000..5577fd1e15d198b4afd08043715bba2e
 +        final ItemStack loaded = ItemStack.CODEC.parse(ops, encoded).getOrThrow();
 +
 +        assertEquals(List.of(VALID_DIAMOND), loaded.get(DataComponents.BUNDLE_CONTENTS).items());
++        assertTrue(ItemStack.validateStrict(loaded).isSuccess());
 +    }
 +
++    // An invalid nested item can only be built by bypassing ItemStackTemplate#create (which drops invalid stacks to
++    // empty); assemble the stack directly so the container genuinely holds a crashing entry.
++    private static ItemStack invalidHoeStack() {
++        final ItemStack hoe = new ItemStack(Items.NETHERITE_HOE);
++        hoe.set(DataComponents.MAX_STACK_SIZE, 69);
++        assertFalse(ItemStack.validateStrict(hoe).isSuccess());
++        return hoe;
++    }
 +}
