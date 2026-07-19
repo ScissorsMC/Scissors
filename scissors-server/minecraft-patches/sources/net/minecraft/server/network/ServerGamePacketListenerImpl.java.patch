@@ -1,11 +1,46 @@
 --- a/net/minecraft/server/network/ServerGamePacketListenerImpl.java
 +++ b/net/minecraft/server/network/ServerGamePacketListenerImpl.java
-@@ -3484,7 +_,7 @@
+@@ -3484,11 +_,21 @@
              }
  
              boolean validSlot = packet.slotNum() >= 1 && packet.slotNum() <= 45;
--            boolean validData = itemStack.isEmpty() || itemStack.getCount() <= itemStack.getMaxStackSize();
-+            boolean validData = itemStack.isEmpty() || itemStack.getCount() <= itemStack.getMaxStackSize() && ItemStack.validateStrict(itemStack).isSuccess(); // Scissors - reject stacks with invalid nested components; saved toolbars bypass /give validation
-             if (drop || (validSlot && !ItemStack.matches(this.player.inventoryMenu.getSlot(packet.slotNum()).getItem(), packet.itemStack()))) { // Insist on valid slot
++            // Scissors start - eliminate invalid nested components from creative items; saved toolbars are client-side and bypass /give validation
++            // Strip invalid bundle entries and fully reject items that are still invalid, so the crashing payload never enters the inventory.
++            // Track whether we altered the client's item: if we did, the client is holding a copy the server does not have and must be corrected below.
++            ItemStack sanitizedItem = ItemStack.sanitizeBundleContents(itemStack);
++            if (!sanitizedItem.isEmpty() && ItemStack.validateStrict(sanitizedItem).isError()) {
++                sanitizedItem = ItemStack.EMPTY;
++            }
++            boolean itemSanitized = !ItemStack.matches(sanitizedItem, itemStack);
++            itemStack = sanitizedItem;
+             boolean validData = itemStack.isEmpty() || itemStack.getCount() <= itemStack.getMaxStackSize();
+-            if (drop || (validSlot && !ItemStack.matches(this.player.inventoryMenu.getSlot(packet.slotNum()).getItem(), packet.itemStack()))) { // Insist on valid slot
++            // Scissors end
++            if (drop || (validSlot && !ItemStack.matches(this.player.inventoryMenu.getSlot(packet.slotNum()).getItem(), itemStack))) { // Insist on valid slot // Scissors - compare against the sanitized item
                  // CraftBukkit start - Call click event
                  org.bukkit.inventory.InventoryView inventory = this.player.inventoryMenu.getBukkitView();
+-                org.bukkit.inventory.ItemStack item = CraftItemStack.asBukkitCopy(packet.itemStack());
++                org.bukkit.inventory.ItemStack item = CraftItemStack.asBukkitCopy(itemStack); // Scissors - use the sanitized item
+ 
+                 SlotType type = SlotType.QUICKBAR;
+                 if (drop) {
+@@ -3535,6 +_,19 @@
+                     LOGGER.warn("Player {} was dropping items too fast in creative mode, ignoring.", this.player.getPlainTextName());
+                 }
+             }
++            // Scissors start - force the client to match the server after sanitizing a creative item
++            // The client applied its own (crashing) item locally when loading a saved toolbar. broadcastChanges() will not
++            // resend the slot because setRemoteSlot() already marked it as synced, so push the server's real slot content
++            // explicitly, overwriting the client's copy so the crashing item disappears immediately instead of on relog.
++            if (itemSanitized && packet.slotNum() >= 0) {
++                this.player.connection.send(new net.minecraft.network.protocol.game.ClientboundContainerSetSlotPacket(
++                    this.player.inventoryMenu.containerId,
++                    this.player.inventoryMenu.incrementStateId(),
++                    packet.slotNum(),
++                    this.player.inventoryMenu.getSlot(packet.slotNum()).getItem()
++                ));
++            }
++            // Scissors end
+         }
+     }
+ 
