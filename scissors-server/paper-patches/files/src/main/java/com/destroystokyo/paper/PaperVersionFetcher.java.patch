@@ -14,6 +14,75 @@
      private static final Gson GSON = new Gson();
  
      @Override
+@@ -59,10 +_,66 @@
+         } else {
+             updateMessage = getUpdateStatusMessage();
+         }
++        // Scissors start - show the upstream Paper reference in /version
++        Component message = updateMessage;
++        final @Nullable Component paperReference = getPaperReferenceMessage();
++        if (paperReference != null) {
++            message = Component.textOfChildren(message, Component.newline(), paperReference);
++        }
+         final @Nullable Component history = this.getHistory();
+ 
+-        return history != null ? Component.textOfChildren(updateMessage, Component.newline(), history) : updateMessage;
+-    }
++        return history != null ? Component.textOfChildren(message, Component.newline(), history) : message;
++        // Scissors end
++    }
++
++    // Scissors start - resolve the upstream Paper commit to a Paper build number
++    private static @Nullable String paperRef() {
++        final java.util.jar.@Nullable Manifest manifest = io.papermc.paper.util.JarManifests.manifest(PaperVersionFetcher.class);
++        return manifest == null ? null : manifest.getMainAttributes().getValue("Paper-Ref");
++    }
++
++    private static @Nullable Component getPaperReferenceMessage() {
++        final @Nullable String ref = paperRef();
++        if (ref == null || ref.isBlank()) {
++            return null;
++        }
++        final String shortRef = ref.substring(0, Math.min(7, ref.length()));
++        final OptionalInt paperBuild = fetchPaperBuildForCommit(ref);
++        final String label = paperBuild.isPresent()
++            ? "Based on Paper build " + paperBuild.getAsInt() + " (" + shortRef + ")"
++            : "Based on Paper commit " + shortRef;
++        return text(label, NamedTextColor.GRAY)
++            .hoverEvent(text("Click to view the Paper commit", NamedTextColor.WHITE))
++            .clickEvent(ClickEvent.openUrl("https://github.com/PaperMC/Paper/commit/" + ref));
++    }
++
++    private static OptionalInt fetchPaperBuildForCommit(final String commit) {
++        try {
++            final URL buildsUrl = URI.create("https://fill.papermc.io/v3/projects/paper/versions/" + PaperVersionFetcher.BUILD_INFO.minecraftVersionId() + "/builds").toURL();
++            final HttpURLConnection connection = (HttpURLConnection) buildsUrl.openConnection();
++            connection.setConnectTimeout(5000);
++            connection.setReadTimeout(5000);
++            connection.setRequestProperty("User-Agent", PaperVersionFetcher.USER_AGENT);
++            connection.setRequestProperty("Accept", "application/json");
++            try (final BufferedReader reader = new BufferedReader(new InputStreamReader(connection.getInputStream(), StandardCharsets.UTF_8))) {
++                final JsonArray builds = GSON.fromJson(reader, JsonArray.class);
++                for (final JsonElement buildElement : builds) {
++                    final JsonObject build = buildElement.getAsJsonObject();
++                    for (final JsonElement commitElement : build.getAsJsonArray("commits")) {
++                        if (commit.equals(commitElement.getAsJsonObject().get("sha").getAsString())) {
++                            return OptionalInt.of(build.get("id").getAsInt());
++                        }
++                    }
++                }
++            } catch (final JsonSyntaxException ex) {
++                LOGGER.warn("Error parsing json from Paper's downloads API", ex);
++            }
++        } catch (final IOException e) {
++            LOGGER.warn("Error while resolving the upstream Paper build", e);
++        }
++        return OptionalInt.empty();
++    }
++    // Scissors end
+ 
+     public static void getUpdateStatusStartupMessage() {
+         int distance = DISTANCE_ERROR;
 @@ -140,7 +_,7 @@
          final String currentVersion = PaperVersionFetcher.BUILD_INFO.minecraftVersionId();
  
