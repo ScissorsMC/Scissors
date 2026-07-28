@@ -12,17 +12,49 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Git Repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
       - name: Set up JDK
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: 'temurin'
-          java-version: '21'
+          java-version: '25'
       - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v4
+        uses: gradle/actions/setup-gradle@v6
       - name: Configure Git User Details
         run: git config --global user.email "actions@github.com" && git config --global user.name "Github Actions"
       - name: Apply Patches
         run: ./gradlew applyAllPatches --stacktrace
       - name: Build
         run: ./gradlew build
+
+  publish:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master' && github.repository == 'ScissorsMC/Scissors'
+    needs: build
+    runs-on: ubuntu-latest
+    # Secrets live in the 'fill' environment, whose deployment branch policy only
+    # allows master — GitHub enforces that server-side, unlike the 'if' above.
+    environment: fill
+    steps:
+      - name: Checkout Git Repository
+        uses: actions/checkout@v7
+        with:
+          # Full history so publishToFill can gather the commits since the last published build
+          fetch-depth: 0
+      - name: Set up JDK
+        uses: actions/setup-java@v5
+        with:
+          distribution: 'temurin'
+          java-version: '25'
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v6
+      - name: Configure Git User Details
+        run: git config --global user.email "actions@github.com" && git config --global user.name "Github Actions"
+      - name: Apply Patches
+        run: ./gradlew applyAllPatches --stacktrace
+      - name: Publish to Fill
+        env:
+          BUILD_NUMBER: ${{ github.run_number }}
+          FILL_API_URL: ${{ secrets.FILL_API_URL }}
+          FILL_API_KEY: ${{ secrets.FILL_API_KEY }}
+        # fill-gradle 1.0.12 is not configuration-cache compatible
+        run: ./gradlew :scissors-server:publishToFill --no-configuration-cache --stacktrace
