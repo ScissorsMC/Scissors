@@ -1,0 +1,52 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Telesphoreo <me@telesphoreo.me>
+Date: Tue, 28 Jul 2026 00:23:45 -0400
+Subject: [PATCH] Test nested command suggestions
+
+Reproduce the runtime depth failure that escaped item component completion and cover the cheap packet preflight scanner.
+
+diff --git a/src/test/java/io/papermc/paper/command/CommandSuggestionNestingTest.java b/src/test/java/io/papermc/paper/command/CommandSuggestionNestingTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..ba7e6f4f21e1e2d4cdce6e6da87d7495be6f7ff3
+--- /dev/null
++++ b/src/test/java/io/papermc/paper/command/CommandSuggestionNestingTest.java
+@@ -0,0 +1,39 @@
++package io.papermc.paper.command;
++
++import com.mojang.brigadier.suggestion.SuggestionsBuilder;
++import io.github.scissorsmc.util.CommandNesting;
++import net.minecraft.commands.arguments.item.ItemParser;
++import org.bukkit.support.RegistryHelper;
++import org.bukkit.support.environment.AllFeatures;
++import org.junit.jupiter.api.Test;
++
++import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++@AllFeatures
++class CommandSuggestionNestingTest {
++
++    @Test
++    void deeplyNestedItemComponentDoesNotEscapeSuggestionParser() {
++        final ItemParser parser = new ItemParser(RegistryHelper.registryAccess());
++        final String command = "minecraft:stone[minecraft:custom_data=" + "[".repeat(CommandNesting.MAX_DEPTH + 1);
++
++        assertDoesNotThrow(() -> parser.fillSuggestions(new SuggestionsBuilder(command, 0)));
++    }
++
++    @Test
++    void detectsExcessiveCommandNesting() {
++        assertFalse(CommandNesting.exceedsMaxDepth("[".repeat(CommandNesting.MAX_DEPTH)));
++        assertTrue(CommandNesting.exceedsMaxDepth("[".repeat(CommandNesting.MAX_DEPTH + 1)));
++    }
++
++    @Test
++    void ignoresDelimitersInQuotedStrings() {
++        final String quotedDelimiters = "'" + "[".repeat(CommandNesting.MAX_DEPTH + 1) + "'";
++        final String escapedQuote = "\"\\\"" + "{".repeat(CommandNesting.MAX_DEPTH + 1) + "\"";
++
++        assertFalse(CommandNesting.exceedsMaxDepth(quotedDelimiters));
++        assertFalse(CommandNesting.exceedsMaxDepth(escapedQuote));
++    }
++}

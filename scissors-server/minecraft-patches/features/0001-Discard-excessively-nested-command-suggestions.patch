@@ -1,0 +1,71 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Telesphoreo <me@telesphoreo.me>
+Date: Tue, 28 Jul 2026 00:23:45 -0400
+Subject: [PATCH] Discard excessively nested command suggestions
+
+Reject recursive command input before it enters the async suggestion queue, and make the authoritative SNBT depth guard report invalid syntax instead of leaking a runtime exception. This prevents completion floods from spamming errors or exhausting the parser stack.
+
+diff --git a/net/minecraft/server/network/ServerGamePacketListenerImpl.java b/net/minecraft/server/network/ServerGamePacketListenerImpl.java
+index 80f6f4f4d4a1c9f2ff34b24aa51198ba6e0c2ac5..652458caacf10b9d1e04a6171a8d5cbefce58228 100644
+--- a/net/minecraft/server/network/ServerGamePacketListenerImpl.java
++++ b/net/minecraft/server/network/ServerGamePacketListenerImpl.java
+@@ -268,6 +268,7 @@ public class ServerGamePacketListenerImpl
+     private static final Component CHAT_VALIDATION_FAILED = Component.translatable("multiplayer.disconnect.chat_validation_failed");
+     private static final Component INVALID_COMMAND_SIGNATURE = Component.translatable("chat.disabled.invalid_command_signature").withStyle(ChatFormatting.RED);
+     private static final int MAX_COMMAND_SUGGESTIONS = 1000;
++    private static final long NESTED_COMMAND_SUGGESTION_LOG_INTERVAL = TimeUnit.SECONDS.toMillis(1L); // Scissors - rate-limit exploit logging
+     public ServerPlayer player;
+     public final PlayerChunkSender chunkSender;
+     private int tickCount;
+@@ -277,6 +278,7 @@ public class ServerGamePacketListenerImpl
+     private final TickThrottler commandSpamThrottler;
+     private final TickThrottler tabSpamThrottler = new TickThrottler(io.papermc.paper.configuration.GlobalConfiguration.get().spamLimiter.tabSpamIncrement, io.papermc.paper.configuration.GlobalConfiguration.get().spamLimiter.tabSpamLimit); // Paper - configurable tab spam limits
+     private final TickThrottler recipeSpamPackets = new TickThrottler(io.papermc.paper.configuration.GlobalConfiguration.get().spamLimiter.recipeSpamIncrement, io.papermc.paper.configuration.GlobalConfiguration.get().spamLimiter.recipeSpamLimit);
++    private long lastNestedCommandSuggestionWarning; // Scissors - rate-limit exploit logging
+     private double firstGoodX;
+     private double firstGoodY;
+     private double firstGoodZ;
+@@ -843,6 +845,20 @@ public class ServerGamePacketListenerImpl
+     @Override
+     public void handleCustomCommandSuggestions(final ServerboundCommandSuggestionPacket packet) {
+         // PacketUtils.ensureRunningOnSameThread(packet, this, this.player.level()); // Paper - AsyncTabCompleteEvent; run this async
++        // Scissors start - discard recursive parser crash payloads before they reach the async queue
++        if (io.github.scissorsmc.util.CommandNesting.exceedsMaxDepth(packet.getCommand())) {
++            final long now = Util.getMillis();
++            if (now - this.lastNestedCommandSuggestionWarning >= NESTED_COMMAND_SUGGESTION_LOG_INTERVAL) {
++                this.lastNestedCommandSuggestionWarning = now;
++                LOGGER.warn(
++                    "Discarding excessively nested command suggestion from {} (maximum depth: {})",
++                    this.player.getScoreboardName(),
++                    io.github.scissorsmc.util.CommandNesting.MAX_DEPTH
++                );
++            }
++            return;
++        }
++        // Scissors end - discard recursive parser crash payloads before they reach the async queue
+         // CraftBukkit start
+         if (!this.tabSpamThrottler.isIncrementAndUnderThreshold() && !this.server.getPlayerList().isOp(this.player.nameAndId()) && !this.server.isSingleplayerOwner(this.player.nameAndId())) { // Paper - configurable tab spam limits
+             this.disconnectAsync(Component.translatable("disconnect.spam"), org.bukkit.event.player.PlayerKickEvent.Cause.SPAM); // Paper - Kick event cause // Paper - add proper async disconnect
+diff --git a/net/minecraft/util/parsing/packrat/Scope.java b/net/minecraft/util/parsing/packrat/Scope.java
+index 4880f16347c99dc5c1a06fbbf0af197c95f3c9e7..25158d7bbb5520ea2ce3143dafc9994542f4c52c 100644
+--- a/net/minecraft/util/parsing/packrat/Scope.java
++++ b/net/minecraft/util/parsing/packrat/Scope.java
+@@ -267,11 +267,16 @@ public final class Scope {
+     }
+ 
+     // Paper start - track depth
++    // Scissors - report excessive nesting as invalid syntax so suggestion parsers can discard it
++    private static final DelayedException<com.mojang.brigadier.exceptions.CommandSyntaxException> TOO_DEEP = DelayedException.create(
++        new com.mojang.brigadier.exceptions.SimpleCommandExceptionType(net.minecraft.network.chat.Component.literal("Input is too deeply nested"))
++    );
+     private int depth;
+ 
+     private static final Term<?> INCREASING_DEPTH_TERM = (parseState, scope, control) -> {
+-        if (++scope.depth > 512) {
+-            parseState.errorCollector().store(parseState.mark(), new IllegalStateException("Too deep"));
++        // Scissors - stop before recursive SNBT parsing can exhaust the stack
++        if (++scope.depth > io.github.scissorsmc.util.CommandNesting.MAX_DEPTH) {
++            parseState.errorCollector().store(parseState.mark(), TOO_DEEP);
+             return false;
+         }
+         return true;
