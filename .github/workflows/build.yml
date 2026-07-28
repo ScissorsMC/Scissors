@@ -9,7 +9,7 @@ jobs:
   build:
     # Only run on PRs if the source branch is on someone else's repo
     if: ${{ github.event_name != 'pull_request' || github.repository != github.event.pull_request.head.repo.full_name }}
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-8vcpu-ubuntu-2404-arm
     steps:
       - name: Checkout Git Repository
         uses: actions/checkout@v7
@@ -30,7 +30,7 @@ jobs:
   publish:
     if: github.event_name == 'push' && github.ref == 'refs/heads/master' && github.repository == 'ScissorsMC/Scissors'
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-8vcpu-ubuntu-2404-arm
     # Secrets live in the 'fill' environment, whose deployment branch policy only
     # allows master — GitHub enforces that server-side, unlike the 'if' above.
     environment: fill
