@@ -49,6 +49,10 @@ jobs:
         uses: gradle/actions/setup-gradle@v6
       - name: Configure Git User Details
         run: git config --global user.email "actions@github.com" && git config --global user.name "Github Actions"
+      - name: Set Build Time
+        # Stamps the jar manifest's Build-Time (defaults to 1970 epoch otherwise)
+        # and the published build's timestamp in Fill
+        run: echo "BUILD_STARTED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
       - name: Apply Patches
         run: ./gradlew applyAllPatches --stacktrace
       - name: Publish to Fill

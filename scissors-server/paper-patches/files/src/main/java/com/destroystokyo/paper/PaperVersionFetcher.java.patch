@@ -1,0 +1,69 @@
+--- a/src/main/java/com/destroystokyo/paper/PaperVersionFetcher.java
++++ b/src/main/java/com/destroystokyo/paper/PaperVersionFetcher.java
+@@ -40,10 +_,10 @@
+     private static final ComponentLogger COMPONENT_LOGGER = ComponentLogger.logger(LogManager.getRootLogger().getName());
+     private static final int DISTANCE_ERROR = -1;
+     private static final int DISTANCE_UNKNOWN = -2;
+-    private static final String DOWNLOAD_PAGE = "https://papermc.io/downloads/paper";
+-    private static final String REPOSITORY = "PaperMC/Paper";
++    private static final String DOWNLOAD_PAGE = "https://fill.scissors.gg"; // Scissors
++    private static final String REPOSITORY = "ScissorsMC/Scissors"; // Scissors
+     private static final ServerBuildInfo BUILD_INFO = ServerBuildInfo.buildInfo();
+-    private static final String USER_AGENT = BUILD_INFO.brandName() + "/" + BUILD_INFO.asString(VERSION_SIMPLE) + " (https://papermc.io)";
++    private static final String USER_AGENT = BUILD_INFO.brandName() + "/" + BUILD_INFO.asString(VERSION_SIMPLE) + " (https://github.com/ScissorsMC/Scissors)"; // Scissors
+     private static final Gson GSON = new Gson();
+ 
+     @Override
+@@ -140,7 +_,7 @@
+         final String currentVersion = PaperVersionFetcher.BUILD_INFO.minecraftVersionId();
+ 
+         try {
+-            final URL versionsUrl = URI.create("https://fill.papermc.io/v3/projects/paper").toURL();
++            final URL versionsUrl = URI.create("https://fill.scissors.gg/v3/projects/scissors").toURL(); // Scissors
+             final HttpURLConnection connection = (HttpURLConnection) versionsUrl.openConnection();
+             connection.setConnectTimeout(5000);
+             connection.setReadTimeout(5000);
+@@ -162,7 +_,7 @@
+                     }
+ 
+                     try {
+-                        final URL buildsUrl = URI.create("https://fill.papermc.io/v3/projects/paper/versions/" + latestVersion + "/builds/latest").toURL();
++                        final URL buildsUrl = URI.create("https://fill.scissors.gg/v3/projects/scissors/versions/" + latestVersion + "/builds/latest").toURL(); // Scissors
+                         final HttpURLConnection connection2 = (HttpURLConnection) buildsUrl.openConnection();
+                         connection2.setConnectTimeout(5000);
+                         connection2.setReadTimeout(5000);
+@@ -183,14 +_,14 @@
+                                 return Optional.of(new MinecraftVersionFetcher(latestVersion, distance));
+                             }
+                         } catch (final JsonSyntaxException ex) {
+-                            LOGGER.error("Error parsing json from Paper's downloads API", ex);
++                            LOGGER.error("Error parsing json from Scissors' downloads API", ex);
+                         }
+                     } catch (final IOException e) {
+                         LOGGER.error("Error while parsing latest build", e);
+                     }
+                 }
+             } catch (final JsonSyntaxException ex) {
+-                LOGGER.error("Error parsing json from Paper's downloads API", ex);
++                LOGGER.error("Error parsing json from Scissors' downloads API", ex);
+             }
+         } catch (final IOException e) {
+             LOGGER.error("Error while parsing version list", e);
+@@ -200,7 +_,7 @@
+ 
+     private static int fetchDistanceFromSiteApi(final int jenkinsBuild) {
+         try {
+-            final URL buildsUrl = URI.create("https://fill.papermc.io/v3/projects/paper/versions/" + PaperVersionFetcher.BUILD_INFO.minecraftVersionId() + "/builds").toURL();
++            final URL buildsUrl = URI.create("https://fill.scissors.gg/v3/projects/scissors/versions/" + PaperVersionFetcher.BUILD_INFO.minecraftVersionId() + "/builds").toURL(); // Scissors
+             final HttpURLConnection connection = (HttpURLConnection) buildsUrl.openConnection();
+             connection.setConnectTimeout(5000);
+             connection.setReadTimeout(5000);
+@@ -214,7 +_,7 @@
+                     .orElseThrow();
+                 return Math.max(latest - jenkinsBuild, 0);
+             } catch (final JsonSyntaxException ex) {
+-                LOGGER.error("Error parsing json from Paper's downloads API", ex);
++                LOGGER.error("Error parsing json from Scissors' downloads API", ex);
+                 return DISTANCE_ERROR;
+             }
+         } catch (final IOException e) {
