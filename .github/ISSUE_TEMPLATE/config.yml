@@ -1,1 +1,5 @@
 blank_issues_enabled: false
+contact_links:
+  - name: Upstream Paper bug
+    url: https://github.com/PaperMC/Paper/issues
+    about: Bugs that also occur on unmodified Paper are upstream bugs — report them to PaperMC, not Scissors.

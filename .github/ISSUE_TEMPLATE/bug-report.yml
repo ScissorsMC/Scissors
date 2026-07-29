@@ -12,28 +12,32 @@ body:
 
         This form is only for bugs introduced by Scissors. You must show the bug
         reproduces on Scissors **and does not** reproduce on unmodified Paper.
-  - type: input
-    id: mc-version
-    attributes:
-      label: Minecraft version
-      description: The exact `mcVersion` you tested against (see `gradle.properties`).
-      placeholder: "26.2"
-    validations:
-      required: true
-  - type: input
+  - type: textarea
     id: scissors-version
     attributes:
-      label: Scissors version / commit
-      description: The Scissors release or commit SHA where you see the bug.
-      placeholder: "e.g. ecaf85b, or the paperclip jar version"
+      label: Scissors version
+      description: >
+        Paste the full output of the `/version` command from your server. It includes
+        everything needed to identify your build: the Minecraft version, the Scissors
+        build number and commit, whether you are behind the latest build, and the
+        upstream Paper build Scissors is based on. Automatically formatted, no
+        backticks needed.
+      render: text
+      placeholder: |
+        This server is running Scissors version 26.2-6-6a763fd (MC: 26.2) (Implementing API version 26.2-R0.1-SNAPSHOT)
+        You are running the latest version
+        Based on Paper build 62 (75c0b48)
     validations:
       required: true
   - type: input
     id: paper-version
     attributes:
-      label: Paper version tested against
-      description: The unmodified Paper build you confirmed the bug does NOT occur on. Must be the same Minecraft version.
-      placeholder: "e.g. Paper 1.21.x build 123 (mcVersion 26.2)"
+      label: Paper build tested against
+      description: >
+        The unmodified Paper build you confirmed the bug does NOT occur on. Must be the
+        same Minecraft version. `/version` on Scissors shows which Paper build your
+        Scissors build is based on — test against that one.
+      placeholder: "e.g. Paper build 62 (Minecraft 26.2)"
     validations:
       required: true
   - type: textarea
@@ -104,6 +108,8 @@ body:
       label: Confirmations
       options:
         - label: I searched existing issues and this bug has not already been reported.
+          required: true
+        - label: I am running the latest Scissors build (`/version` says "You are running the latest version", or I updated and the bug still occurs).
           required: true
         - label: I tested the same Minecraft version on both Scissors and unmodified Paper.
           required: true
