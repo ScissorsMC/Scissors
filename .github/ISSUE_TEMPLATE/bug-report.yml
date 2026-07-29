@@ -24,9 +24,9 @@ body:
         backticks needed.
       render: text
       placeholder: |
-        This server is running Scissors version 26.2-6-6a763fd (MC: 26.2) (Implementing API version 26.2-R0.1-SNAPSHOT)
+        This server is running Scissors version 26.2-10-master@4abd686 (2026-07-29T03:03:51Z) (Implementing API version 26.2.build.10-stable)
         You are running the latest version
-        Based on Paper build 62 (75c0b48)
+        Based on Paper build 87 (a95ae8d)
     validations:
       required: true
   - type: input
