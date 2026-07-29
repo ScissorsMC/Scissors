@@ -36,6 +36,10 @@ jobs:
     # Secrets live in the 'fill' environment, whose deployment branch policy only
     # allows master — GitHub enforces that server-side, unlike the 'if' above.
     environment: fill
+    env:
+      # Job-level so the Build and Publish steps produce identical task inputs —
+      # otherwise publish rebuilds every jar with the real build number
+      BUILD_NUMBER: ${{ github.run_number }}
     steps:
       - name: Checkout Git Repository
         uses: actions/checkout@v7
@@ -58,12 +62,12 @@ jobs:
       - name: Apply Patches
         run: ./gradlew applyAllPatches --stacktrace
       - name: Build
-        # Runs before publish so a compile or test failure blocks the release;
-        # the publish step below reuses these outputs and only uploads
-        run: ./gradlew build --stacktrace
+        # Runs before publish so a compile or test failure blocks the release.
+        # createPaperclipJar is the artifact fill publishes — building it here lets
+        # it assemble in parallel with the tests, leaving the publish step upload-only
+        run: ./gradlew build :scissors-server:createPaperclipJar --stacktrace
       - name: Publish to Fill
         env:
-          BUILD_NUMBER: ${{ github.run_number }}
           FILL_API_URL: ${{ secrets.FILL_API_URL }}
           FILL_API_KEY: ${{ secrets.FILL_API_KEY }}
         # fill-gradle 1.0.12 is not configuration-cache compatible
