@@ -1,0 +1,182 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Telesphoreo <me@telesphoreo.me>
+Date: Wed, 29 Jul 2026 00:37:32 -0400
+Subject: [PATCH] Reject remote privileged packet targets
+
+Editor and tag-query packets must not load or operate on arbitrary remote chunks and entities. Require every privileged target, including 26.2 test blocks, to be loaded and within 32 blocks, and rate-limit abuse logging.
+
+diff --git a/net/minecraft/network/protocol/game/ServerboundSetCommandMinecartPacket.java b/net/minecraft/network/protocol/game/ServerboundSetCommandMinecartPacket.java
+index 20c1ebd9514b0e2b0e8014d052c9d760c5daaf28..b3f5496f0470e544e659fe1d43785e626ff4f02c 100644
+--- a/net/minecraft/network/protocol/game/ServerboundSetCommandMinecartPacket.java
++++ b/net/minecraft/network/protocol/game/ServerboundSetCommandMinecartPacket.java
+@@ -49,6 +49,11 @@ public class ServerboundSetCommandMinecartPacket implements Packet<ServerGamePac
+         return level.getEntity(this.entity) instanceof MinecartCommandBlock minecartCommandBlock ? minecartCommandBlock.getCommandBlock() : null;
+     }
+ 
++    // Scissors - expose the target so the server can validate its distance before editing it
++    public int getEntityId() {
++        return this.entity;
++    }
++
+     public String getCommand() {
+         return this.command;
+     }
+diff --git a/net/minecraft/server/network/ServerGamePacketListenerImpl.java b/net/minecraft/server/network/ServerGamePacketListenerImpl.java
+index 652458caacf10b9d1e04a6171a8d5cbefce58228..f291183fdb9404748c87863ca106178b01e344a1 100644
+--- a/net/minecraft/server/network/ServerGamePacketListenerImpl.java
++++ b/net/minecraft/server/network/ServerGamePacketListenerImpl.java
+@@ -269,6 +269,8 @@ public class ServerGamePacketListenerImpl
+     private static final Component INVALID_COMMAND_SIGNATURE = Component.translatable("chat.disabled.invalid_command_signature").withStyle(ChatFormatting.RED);
+     private static final int MAX_COMMAND_SUGGESTIONS = 1000;
+     private static final long NESTED_COMMAND_SUGGESTION_LOG_INTERVAL = TimeUnit.SECONDS.toMillis(1L); // Scissors - rate-limit exploit logging
++    private static final double MAX_PRIVILEGED_PACKET_DISTANCE_SQUARED = 32.0 * 32.0; // Scissors - remote editor/query packets
++    private static final long INVALID_PRIVILEGED_PACKET_LOG_INTERVAL = TimeUnit.SECONDS.toMillis(1L); // Scissors - rate-limit exploit logging
+     public ServerPlayer player;
+     public final PlayerChunkSender chunkSender;
+     private int tickCount;
+@@ -279,6 +281,7 @@ public class ServerGamePacketListenerImpl
+     private final TickThrottler tabSpamThrottler = new TickThrottler(io.papermc.paper.configuration.GlobalConfiguration.get().spamLimiter.tabSpamIncrement, io.papermc.paper.configuration.GlobalConfiguration.get().spamLimiter.tabSpamLimit); // Paper - configurable tab spam limits
+     private final TickThrottler recipeSpamPackets = new TickThrottler(io.papermc.paper.configuration.GlobalConfiguration.get().spamLimiter.recipeSpamIncrement, io.papermc.paper.configuration.GlobalConfiguration.get().spamLimiter.recipeSpamLimit);
+     private long lastNestedCommandSuggestionWarning; // Scissors - rate-limit exploit logging
++    private long lastInvalidPrivilegedPacketWarning; // Scissors - rate-limit exploit logging
+     private double firstGoodX;
+     private double firstGoodY;
+     private double firstGoodZ;
+@@ -959,9 +962,12 @@ public class ServerGamePacketListenerImpl
+         if (!this.player.canUseGameMasterBlocks() && (!this.player.isCreative() || !this.player.getBukkitEntity().hasPermission("minecraft.commandblock"))) { // Paper - command block permission
+             this.player.sendSystemMessage(Component.translatable("advMode.notAllowed"));
+         } else {
++            BlockPos blockPos = packet.getPos();
++            if (!this.isValidPrivilegedBlockTarget(blockPos, "command block edit")) {
++                return;
++            }
+             BaseCommandBlock commandBlock = null;
+             CommandBlockEntity autoCommandBlock = null;
+-            BlockPos blockPos = packet.getPos();
+             BlockEntity blockEntity = this.player.level().getBlockEntity(blockPos);
+             if (blockEntity instanceof CommandBlockEntity commandBlockEntity) {
+                 autoCommandBlock = commandBlockEntity;
+@@ -1020,7 +1026,12 @@ public class ServerGamePacketListenerImpl
+         if (!this.player.canUseGameMasterBlocks() && (!this.player.isCreative() || !this.player.getBukkitEntity().hasPermission("minecraft.commandblock"))) { // Paper - command block permission
+             this.player.sendSystemMessage(Component.translatable("advMode.notAllowed"));
+         } else {
+-            BaseCommandBlock commandBlock = packet.getCommandBlock(this.player.level());
++            Entity entity = this.player.level().getEntity(packet.getEntityId());
++            if (!(entity instanceof net.minecraft.world.entity.vehicle.minecart.MinecartCommandBlock minecart)
++                || !this.isValidPrivilegedEntityTarget(minecart, "command minecart edit")) {
++                return;
++            }
++            BaseCommandBlock commandBlock = minecart.getCommandBlock();
+             if (commandBlock != null) {
+                 String command = packet.getCommand();
+                 commandBlock.setCommand(command);
+@@ -1191,6 +1202,9 @@ public class ServerGamePacketListenerImpl
+         PacketUtils.ensureRunningOnSameThread(packet, this, this.player.level());
+         if (this.player.canUseGameMasterBlocks()) {
+             BlockPos blockPos = packet.getPos();
++            if (!this.isValidPrivilegedBlockTarget(blockPos, "structure block edit")) {
++                return;
++            }
+             BlockState state = this.player.level().getBlockState(blockPos);
+             if (this.player.level().getBlockEntity(blockPos) instanceof StructureBlockEntity structure) {
+                 structure.setMode(packet.getMode());
+@@ -1244,6 +1258,9 @@ public class ServerGamePacketListenerImpl
+         PacketUtils.ensureRunningOnSameThread(packet, this, this.player.level());
+         if (this.player.canUseGameMasterBlocks()) {
+             BlockPos blockPos = packet.position();
++            if (!this.isValidPrivilegedBlockTarget(blockPos, "test block edit")) {
++                return;
++            }
+             BlockState initialState = this.player.level().getBlockState(blockPos);
+             if (this.player.level().getBlockEntity(blockPos) instanceof TestBlockEntity testBlock) {
+                 testBlock.setMode(packet.mode());
+@@ -1258,7 +1275,9 @@ public class ServerGamePacketListenerImpl
+     public void handleTestInstanceBlockAction(final ServerboundTestInstanceBlockActionPacket packet) {
+         PacketUtils.ensureRunningOnSameThread(packet, this, this.player.level());
+         BlockPos pos = packet.pos();
+-        if (this.player.canUseGameMasterBlocks() && this.player.level().getBlockEntity(pos) instanceof TestInstanceBlockEntity blockEntity) {
++        if (this.player.canUseGameMasterBlocks()
++            && this.isValidPrivilegedBlockTarget(pos, "test instance block action")
++            && this.player.level().getBlockEntity(pos) instanceof TestInstanceBlockEntity blockEntity) {
+             if (packet.action() != ServerboundTestInstanceBlockActionPacket.Action.QUERY
+                 && packet.action() != ServerboundTestInstanceBlockActionPacket.Action.INIT) {
+                 blockEntity.set(packet.data());
+@@ -1303,6 +1322,9 @@ public class ServerGamePacketListenerImpl
+         PacketUtils.ensureRunningOnSameThread(packet, this, this.player.level());
+         if (this.player.canUseGameMasterBlocks()) {
+             BlockPos blockPos = packet.getPos();
++            if (!this.isValidPrivilegedBlockTarget(blockPos, "jigsaw block edit")) {
++                return;
++            }
+             BlockState state = this.player.level().getBlockState(blockPos);
+             if (this.player.level().getBlockEntity(blockPos) instanceof JigsawBlockEntity jigsaw) {
+                 jigsaw.setName(packet.getName());
+@@ -1323,6 +1345,9 @@ public class ServerGamePacketListenerImpl
+         PacketUtils.ensureRunningOnSameThread(packet, this, this.player.level());
+         if (this.player.canUseGameMasterBlocks()) {
+             BlockPos blockPos = packet.getPos();
++            if (!this.isValidPrivilegedBlockTarget(blockPos, "jigsaw generation")) {
++                return;
++            }
+             if (this.player.level().getBlockEntity(blockPos) instanceof JigsawBlockEntity jigsaw) {
+                 jigsaw.generate(this.player.level(), packet.levels(), packet.keepJigsaws());
+             }
+@@ -1446,7 +1471,7 @@ public class ServerGamePacketListenerImpl
+         PacketUtils.ensureRunningOnSameThread(packet, this, this.player.level());
+         if (this.player.permissions().hasPermission(Permissions.COMMANDS_GAMEMASTER)) {
+             Entity entity = this.player.level().getEntity(packet.getEntityId());
+-            if (entity != null) {
++            if (entity != null && this.isValidPrivilegedEntityTarget(entity, "entity tag query")) {
+                 try (ProblemReporter.ScopedCollector reporter = new ProblemReporter.ScopedCollector(entity.problemPath(), LOGGER)) {
+                     TagValueOutput output = TagValueOutput.createWithContext(reporter, entity.registryAccess());
+                     entity.saveWithoutId(output);
+@@ -1470,13 +1495,48 @@ public class ServerGamePacketListenerImpl
+     @Override
+     public void handleBlockEntityTagQuery(final ServerboundBlockEntityTagQueryPacket packet) {
+         PacketUtils.ensureRunningOnSameThread(packet, this, this.player.level());
+-        if (this.player.permissions().hasPermission(Permissions.COMMANDS_GAMEMASTER)) {
++        if (this.player.permissions().hasPermission(Permissions.COMMANDS_GAMEMASTER)
++            && this.isValidPrivilegedBlockTarget(packet.getPos(), "block entity tag query")) {
+             BlockEntity blockEntity = this.player.level().getBlockEntity(packet.getPos());
+             CompoundTag tag = blockEntity != null ? blockEntity.saveWithoutMetadata(this.player.registryAccess()) : null;
+             this.send(new ClientboundTagQueryPacket(packet.getTransactionId(), tag));
+         }
+     }
+ 
++    // Scissors start - discard remote privileged packet targets before any path can load or operate on their chunks
++    private boolean isValidPrivilegedBlockTarget(final BlockPos pos, final String action) {
++        ServerLevel level = this.player.level();
++        boolean valid = level.isLoadedAndInBounds(pos)
++            && this.player.position().distanceToSqr(Vec3.atCenterOf(pos)) <= MAX_PRIVILEGED_PACKET_DISTANCE_SQUARED;
++        if (!valid) {
++            this.logInvalidPrivilegedPacket(action, pos.toShortString());
++        }
++        return valid;
++    }
++
++    private boolean isValidPrivilegedEntityTarget(final Entity entity, final String action) {
++        boolean valid = entity.level() == this.player.level()
++            && this.player.position().distanceToSqr(entity.position()) <= MAX_PRIVILEGED_PACKET_DISTANCE_SQUARED;
++        if (!valid) {
++            this.logInvalidPrivilegedPacket(action, entity.getType() + " " + entity.getUUID());
++        }
++        return valid;
++    }
++
++    private void logInvalidPrivilegedPacket(final String action, final String target) {
++        long now = Util.getMillis();
++        if (now - this.lastInvalidPrivilegedPacketWarning >= INVALID_PRIVILEGED_PACKET_LOG_INTERVAL) {
++            this.lastInvalidPrivilegedPacketWarning = now;
++            LOGGER.warn(
++                "Discarding remote {} packet from {} targeting {}; target must be loaded and within 32 blocks",
++                action,
++                this.player.getScoreboardName(),
++                target
++            );
++        }
++    }
++    // Scissors end - discard remote privileged packet targets before any path can load or operate on their chunks
++
+     @Override
+     public void handleMovePlayer(final ServerboundMovePlayerPacket packet) {
+         PacketUtils.ensureRunningOnSameThread(packet, this, this.player.level());

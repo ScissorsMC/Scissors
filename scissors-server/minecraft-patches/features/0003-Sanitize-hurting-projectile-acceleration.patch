@@ -1,0 +1,106 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Telesphoreo <me@telesphoreo.me>
+Date: Wed, 29 Jul 2026 00:34:43 -0400
+Subject: [PATCH] Sanitize hurting projectile acceleration
+
+Stored or runtime-mutated non-finite acceleration can poison projectile movement and client tracking. Validate the scalar at load and tick boundaries, bound finite values, and discard non-finite launch directions.
+
+diff --git a/net/minecraft/world/entity/projectile/hurtingprojectile/AbstractHurtingProjectile.java b/net/minecraft/world/entity/projectile/hurtingprojectile/AbstractHurtingProjectile.java
+index 84c07fb51e8321b32f8607a602dd1e417ce36af7..cec39dd1c63f2c43b669a9a52482fef1f2ce293c 100644
+--- a/net/minecraft/world/entity/projectile/hurtingprojectile/AbstractHurtingProjectile.java
++++ b/net/minecraft/world/entity/projectile/hurtingprojectile/AbstractHurtingProjectile.java
+@@ -1,9 +1,11 @@
+ package net.minecraft.world.entity.projectile.hurtingprojectile;
+ 
++import com.mojang.logging.LogUtils;
+ import net.minecraft.core.particles.ParticleOptions;
+ import net.minecraft.core.particles.ParticleTypes;
+ import net.minecraft.network.syncher.SynchedEntityData;
+ import net.minecraft.server.level.ServerLevel;
++import net.minecraft.util.Mth;
+ import net.minecraft.world.damagesource.DamageSource;
+ import net.minecraft.world.entity.Entity;
+ import net.minecraft.world.entity.EntityType;
+@@ -17,10 +19,14 @@ import net.minecraft.world.level.storage.ValueOutput;
+ import net.minecraft.world.phys.HitResult;
+ import net.minecraft.world.phys.Vec3;
+ import org.jspecify.annotations.Nullable;
++import org.slf4j.Logger;
+ 
+ public abstract class AbstractHurtingProjectile extends Projectile {
++    private static final Logger LOGGER = LogUtils.getLogger();
+     public static final double INITAL_ACCELERATION_POWER = 0.1;
+     public static final double DEFLECTION_SCALE = 0.5;
++    // Scissors - large finite values are bounded as well as NaN and infinities so stored projectiles cannot poison movement
++    static final double MAX_ACCELERATION_POWER = 1024.0;
+     public double accelerationPower = 0.1;
+     public float bukkitYield = 1; // CraftBukkit
+     public boolean isIncendiary = true; // CraftBukkit
+@@ -74,6 +80,8 @@ public abstract class AbstractHurtingProjectile extends Projectile {
+ 
+     @Override
+     public void tick() {
++        // Scissors - plugins can mutate the public field after load, so enforce the invariant at the movement sink too
++        this.sanitizeAccelerationPower("before ticking");
+         Entity owner = this.getOwner();
+         this.applyInertia();
+         if (this.level().isClientSide() || (owner == null || !owner.isRemoved()) && this.level().hasChunkAt(this.blockPosition())) {
+@@ -174,6 +182,7 @@ public abstract class AbstractHurtingProjectile extends Projectile {
+     protected void readAdditionalSaveData(final ValueInput input) {
+         super.readAdditionalSaveData(input);
+         this.accelerationPower = input.getDoubleOr("acceleration_power", 0.1);
++        this.sanitizeAccelerationPower("while loading stored data"); // Scissors - eliminate invalid stored projectile acceleration
+     }
+ 
+     @Override
+@@ -182,10 +191,49 @@ public abstract class AbstractHurtingProjectile extends Projectile {
+     }
+ 
+     public void assignDirectionalMovement(final Vec3 direction, final double speed) {
+-        this.setDeltaMovement(direction.normalize().scale(speed));
++        // Scissors start - eliminate non-finite projectile movement before it reaches entity tracking or clients
++        double sanitizedSpeed = sanitizeAccelerationPowerValue(speed);
++        if (!direction.isFinite()) {
++            if (!this.level().isClientSide()) {
++                LOGGER.warn("Discarded non-finite movement direction {} from {} with UUID {}", direction, this.getType(), this.getUUID());
++            }
++            this.setDeltaMovement(Vec3.ZERO);
++        } else {
++            if (Double.compare(speed, sanitizedSpeed) != 0 && !this.level().isClientSide()) {
++                LOGGER.warn("Sanitized directional movement speed {} to {} for {} with UUID {}", speed, sanitizedSpeed, this.getType(), this.getUUID());
++            }
++            this.setDeltaMovement(direction.normalize().scale(sanitizedSpeed));
++        }
++        // Scissors end - eliminate non-finite projectile movement before it reaches entity tracking or clients
+         this.needsSync = true;
+     }
+ 
++    // Scissors start - eliminate invalid acceleration regardless of whether it came from storage or runtime mutation
++    static double sanitizeAccelerationPowerValue(final double accelerationPower) {
++        if (!Double.isFinite(accelerationPower)) {
++            return INITAL_ACCELERATION_POWER;
++        }
++        return Mth.clamp(accelerationPower, -MAX_ACCELERATION_POWER, MAX_ACCELERATION_POWER);
++    }
++
++    private void sanitizeAccelerationPower(final String source) {
++        double sanitized = sanitizeAccelerationPowerValue(this.accelerationPower);
++        if (Double.compare(this.accelerationPower, sanitized) != 0) {
++            if (!this.level().isClientSide()) {
++                LOGGER.warn(
++                    "Sanitized acceleration power {} to {} for {} with UUID {} {}",
++                    this.accelerationPower,
++                    sanitized,
++                    this.getType(),
++                    this.getUUID(),
++                    source
++                );
++            }
++            this.accelerationPower = sanitized;
++        }
++    }
++    // Scissors end - eliminate invalid acceleration regardless of whether it came from storage or runtime mutation
++
+     @Override
+     protected void onDeflection(final boolean byAttack) {
+         super.onDeflection(byAttack);

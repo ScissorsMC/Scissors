@@ -1,0 +1,212 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Telesphoreo <me@telesphoreo.me>
+Date: Wed, 29 Jul 2026 00:59:24 -0400
+Subject: [PATCH] Reject oversized entity selectors
+
+Reject command selector distance and volume bounds beyond 1024 blocks before they can trigger enormous entity queries. Sanitize selectors constructed outside the command parser as defense in depth and log eliminated oversized ranges.
+
+diff --git a/net/minecraft/commands/arguments/selector/EntitySelector.java b/net/minecraft/commands/arguments/selector/EntitySelector.java
+index 6c05b9276bdc267a36376f6c64592a50e4b2b36e..293cfcfa6b0b1803eaece85987a4444c6a059fc9 100644
+--- a/net/minecraft/commands/arguments/selector/EntitySelector.java
++++ b/net/minecraft/commands/arguments/selector/EntitySelector.java
+@@ -2,9 +2,11 @@ package net.minecraft.commands.arguments.selector;
+ 
+ import com.mojang.brigadier.StringReader;
+ import com.mojang.brigadier.exceptions.CommandSyntaxException;
++import com.mojang.logging.LogUtils;
+ import com.mojang.serialization.Codec;
+ import it.unimi.dsi.fastutil.objects.ObjectArrayList;
+ import java.util.List;
++import java.util.Optional;
+ import java.util.UUID;
+ import java.util.function.BiConsumer;
+ import java.util.function.Function;
+@@ -26,8 +28,11 @@ import net.minecraft.world.level.entity.EntityTypeTest;
+ import net.minecraft.world.phys.AABB;
+ import net.minecraft.world.phys.Vec3;
+ import org.jspecify.annotations.Nullable;
++import org.slf4j.Logger;
+ 
+ public class EntitySelector {
++    private static final Logger LOGGER = LogUtils.getLogger();
++    public static final double MAX_RANGE = 1024.0;
+     public static final int INFINITE = Integer.MAX_VALUE;
+     public static final BiConsumer<Vec3, List<? extends Entity>> ORDER_ARBITRARY = (p, c) -> {};
+     private static final EntityTypeTest<Entity, ?> ANY_TYPE = new EntityTypeTest<Entity, Entity>() {
+@@ -87,9 +92,14 @@ public class EntitySelector {
+         this.includesEntities = includesEntities;
+         this.worldLimited = worldLimited;
+         this.contextFreePredicates = contextFreePredicates;
+-        this.range = range;
++        // Scissors start - keep direct/programmatic selector construction inside the same safe bounds as command parsing
++        this.range = sanitizeRange(range);
+         this.position = position;
+-        this.aabb = aabb;
++        this.aabb = sanitizeAabb(aabb);
++        if (!java.util.Objects.equals(range, this.range) || !java.util.Objects.equals(aabb, this.aabb)) {
++            LOGGER.warn("Sanitized an entity selector whose range exceeded {} blocks", MAX_RANGE);
++        }
++        // Scissors end - keep direct/programmatic selector construction inside the same safe bounds as command parsing
+         this.order = order;
+         this.currentEntity = currentEntity;
+         this.playerName = playerName;
+@@ -98,6 +108,46 @@ public class EntitySelector {
+         this.usesSelector = usesSelector;
+     }
+ 
++    // Scissors start - defense in depth for selectors created outside EntitySelectorOptions
++    private static MinMaxBounds.@Nullable Doubles sanitizeRange(final MinMaxBounds.@Nullable Doubles range) {
++        if (range == null) {
++            return null;
++        }
++
++        Optional<Double> min = range.min().map(value -> sanitizeRangeValue(value, 0.0, MAX_RANGE));
++        Optional<Double> max = range.max().map(value -> sanitizeRangeValue(value, 0.0, MAX_RANGE));
++        if (min.isPresent()) {
++            return max.isPresent() ? MinMaxBounds.Doubles.between(min.get(), max.get()) : MinMaxBounds.Doubles.atLeast(min.get());
++        }
++        return max.isPresent() ? MinMaxBounds.Doubles.atMost(max.get()) : MinMaxBounds.Doubles.ANY;
++    }
++
++    private static @Nullable AABB sanitizeAabb(final @Nullable AABB aabb) {
++        if (aabb == null) {
++            return null;
++        }
++
++        double minX = sanitizeRangeValue(aabb.minX, -MAX_RANGE, MAX_RANGE + 1.0);
++        double minY = sanitizeRangeValue(aabb.minY, -MAX_RANGE, MAX_RANGE + 1.0);
++        double minZ = sanitizeRangeValue(aabb.minZ, -MAX_RANGE, MAX_RANGE + 1.0);
++        double maxX = sanitizeRangeValue(aabb.maxX, -MAX_RANGE, MAX_RANGE + 1.0);
++        double maxY = sanitizeRangeValue(aabb.maxY, -MAX_RANGE, MAX_RANGE + 1.0);
++        double maxZ = sanitizeRangeValue(aabb.maxZ, -MAX_RANGE, MAX_RANGE + 1.0);
++        return new AABB(
++            Math.min(minX, maxX),
++            Math.min(minY, maxY),
++            Math.min(minZ, maxZ),
++            Math.max(minX, maxX),
++            Math.max(minY, maxY),
++            Math.max(minZ, maxZ)
++        );
++    }
++
++    private static double sanitizeRangeValue(final double value, final double min, final double max) {
++        return Double.isNaN(value) ? 0.0 : net.minecraft.util.Mth.clamp(value, min, max);
++    }
++    // Scissors end - defense in depth for selectors created outside EntitySelectorOptions
++
+     public int getMaxResults() {
+         return this.maxResults;
+     }
+diff --git a/net/minecraft/commands/arguments/selector/options/EntitySelectorOptions.java b/net/minecraft/commands/arguments/selector/options/EntitySelectorOptions.java
+index 0897a2c1538f0cb572848c6ef7d0edfb172e2dea..b2b5a9621d377b1f18ed4857181309bdb7910c10 100644
+--- a/net/minecraft/commands/arguments/selector/options/EntitySelectorOptions.java
++++ b/net/minecraft/commands/arguments/selector/options/EntitySelectorOptions.java
+@@ -14,6 +14,8 @@ import java.util.Map;
+ import java.util.Objects;
+ import java.util.Optional;
+ import java.util.Map.Entry;
++import java.util.concurrent.TimeUnit;
++import java.util.concurrent.atomic.AtomicLong;
+ import java.util.function.Predicate;
+ import net.minecraft.advancements.AdvancementHolder;
+ import net.minecraft.advancements.AdvancementProgress;
+@@ -37,6 +39,7 @@ import net.minecraft.server.level.ServerLevel;
+ import net.minecraft.server.level.ServerPlayer;
+ import net.minecraft.tags.TagKey;
+ import net.minecraft.util.ProblemReporter;
++import net.minecraft.util.Util;
+ import net.minecraft.world.entity.EntityType;
+ import net.minecraft.world.entity.EntityTypes;
+ import net.minecraft.world.item.ItemStack;
+@@ -55,6 +58,8 @@ import org.slf4j.Logger;
+ 
+ public class EntitySelectorOptions {
+     private static final Logger LOGGER = LogUtils.getLogger();
++    private static final long RANGE_WARNING_INTERVAL = TimeUnit.SECONDS.toMillis(1L);
++    private static final AtomicLong NEXT_RANGE_WARNING = new AtomicLong();
+     private static final Map<String, EntitySelectorOptions.Option> OPTIONS = Maps.newHashMap();
+     private static final Predicate<EntitySelectorParser> ALWAYS_AVAILABLE = var0 -> true;
+     public static final DynamicCommandExceptionType ERROR_UNKNOWN_OPTION = new DynamicCommandExceptionType(
+@@ -66,6 +71,9 @@ public class EntitySelectorOptions {
+     public static final SimpleCommandExceptionType ERROR_RANGE_NEGATIVE = new SimpleCommandExceptionType(
+         Component.translatable("argument.entity.options.distance.negative")
+     );
++    public static final SimpleCommandExceptionType ERROR_RANGE_TOO_LARGE = new SimpleCommandExceptionType(
++        Component.literal("Selector ranges cannot exceed " + (int)EntitySelector.MAX_RANGE + " blocks")
++    );
+     public static final SimpleCommandExceptionType ERROR_LEVEL_NEGATIVE = new SimpleCommandExceptionType(
+         Component.translatable("argument.entity.options.level.negative")
+     );
+@@ -105,12 +113,15 @@ public class EntitySelectorOptions {
+             register("distance", parser -> {
+                 int start = parser.getReader().getCursor();
+                 MinMaxBounds.Doubles value = MinMaxBounds.Doubles.fromReader(parser.getReader());
+-                if ((!value.min().isPresent() || !((Double)value.min().get() < 0.0)) && (!value.max().isPresent() || !((Double)value.max().get() < 0.0))) {
+-                    parser.setDistance(value);
+-                    parser.setWorldLimited();
+-                } else {
++                if (value.min().isPresent() && value.min().get() < 0.0 || value.max().isPresent() && value.max().get() < 0.0) {
+                     throw rollbackAndThrow(parser, start, ERROR_RANGE_NEGATIVE);
+                 }
++                if (!isValidRange(value.min()) || !isValidRange(value.max())) {
++                    logRejectedRange();
++                    throw rollbackAndThrow(parser, start, ERROR_RANGE_TOO_LARGE);
++                }
++                parser.setDistance(value);
++                parser.setWorldLimited();
+             }, s -> s.getDistance() == null, Component.translatable("argument.entity.options.distance.description"));
+             register("level", parser -> {
+                 int start = parser.getReader().getCursor();
+@@ -135,16 +146,19 @@ public class EntitySelectorOptions {
+                 parser.setZ(parser.getReader().readDouble());
+             }, s -> s.getZ() == null, Component.translatable("argument.entity.options.z.description"));
+             register("dx", parser -> {
++                int start = parser.getReader().getCursor();
+                 parser.setWorldLimited();
+-                parser.setDeltaX(parser.getReader().readDouble());
++                parser.setDeltaX(readLimitedDelta(parser, start));
+             }, s -> s.getDeltaX() == null, Component.translatable("argument.entity.options.dx.description"));
+             register("dy", parser -> {
++                int start = parser.getReader().getCursor();
+                 parser.setWorldLimited();
+-                parser.setDeltaY(parser.getReader().readDouble());
++                parser.setDeltaY(readLimitedDelta(parser, start));
+             }, s -> s.getDeltaY() == null, Component.translatable("argument.entity.options.dy.description"));
+             register("dz", parser -> {
++                int start = parser.getReader().getCursor();
+                 parser.setWorldLimited();
+-                parser.setDeltaZ(parser.getReader().readDouble());
++                parser.setDeltaZ(readLimitedDelta(parser, start));
+             }, s -> s.getDeltaZ() == null, Component.translatable("argument.entity.options.dz.description"));
+             register(
+                 "x_rotation",
+@@ -505,6 +519,29 @@ public class EntitySelectorOptions {
+         return type.createWithContext(parser.getReader());
+     }
+ 
++    // Scissors start - reject crash-sized selector volumes instead of silently clamping user commands
++    private static boolean isValidRange(final Optional<Double> value) {
++        return value.isEmpty() || Double.isFinite(value.get()) && Math.abs(value.get()) <= EntitySelector.MAX_RANGE;
++    }
++
++    private static double readLimitedDelta(final EntitySelectorParser parser, final int start) throws CommandSyntaxException {
++        double value = parser.getReader().readDouble();
++        if (!Double.isFinite(value) || Math.abs(value) > EntitySelector.MAX_RANGE) {
++            logRejectedRange();
++            throw rollbackAndThrow(parser, start, ERROR_RANGE_TOO_LARGE);
++        }
++        return value;
++    }
++
++    private static void logRejectedRange() {
++        long now = Util.getMillis();
++        long nextWarning = NEXT_RANGE_WARNING.get();
++        if (now >= nextWarning && NEXT_RANGE_WARNING.compareAndSet(nextWarning, now + RANGE_WARNING_INTERVAL)) {
++            LOGGER.warn("Discarded an entity selector whose distance or volume exceeded {} blocks", (int)EntitySelector.MAX_RANGE);
++        }
++    }
++    // Scissors end - reject crash-sized selector volumes instead of silently clamping user commands
++
+     private static CommandSyntaxException rollbackAndThrow(
+         final EntitySelectorParser parser, final int start, final DynamicCommandExceptionType type, final String argument
+     ) {

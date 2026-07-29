@@ -1,0 +1,48 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Telesphoreo <me@telesphoreo.me>
+Date: Wed, 29 Jul 2026 00:55:22 -0400
+Subject: [PATCH] Test vehicle collision limits
+
+
+diff --git a/src/test/java/io/papermc/paper/scissors/VehicleCollisionLimitTest.java b/src/test/java/io/papermc/paper/scissors/VehicleCollisionLimitTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..0f937ec20a0f1392eff5ef0e65c7004f9fd5c85d
+--- /dev/null
++++ b/src/test/java/io/papermc/paper/scissors/VehicleCollisionLimitTest.java
+@@ -0,0 +1,36 @@
++package io.papermc.paper.scissors;
++
++import java.lang.reflect.InvocationTargetException;
++import java.lang.reflect.Method;
++import net.minecraft.world.entity.vehicle.VehicleEntity;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++
++@Normal
++class VehicleCollisionLimitTest {
++
++    @Test
++    void honorsSmallerConfiguredLimit() {
++        assertEquals(8, collisionLimit(8));
++        assertEquals(1, collisionLimit(1));
++    }
++
++    @Test
++    void retainsSecurityLimitWhenConfigurationIsDisabledOrExcessive() {
++        assertEquals(16, collisionLimit(0));
++        assertEquals(16, collisionLimit(-1));
++        assertEquals(16, collisionLimit(1000));
++    }
++
++    private static int collisionLimit(final int configuredLimit) {
++        try {
++            final Method method = VehicleEntity.class.getDeclaredMethod("collisionLimit", int.class);
++            method.setAccessible(true);
++            return (int)method.invoke(null, configuredLimit);
++        } catch (final NoSuchMethodException | IllegalAccessException | InvocationTargetException exception) {
++            throw new AssertionError(exception);
++        }
++    }
++}

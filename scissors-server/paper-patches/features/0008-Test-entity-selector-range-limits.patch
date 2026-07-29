@@ -1,0 +1,95 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Telesphoreo <me@telesphoreo.me>
+Date: Wed, 29 Jul 2026 00:59:24 -0400
+Subject: [PATCH] Test entity selector range limits
+
+
+diff --git a/src/test/java/io/papermc/paper/scissors/EntitySelectorRangeTest.java b/src/test/java/io/papermc/paper/scissors/EntitySelectorRangeTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..aaf3006166bbe037ca5a396c2eb2c4432e2c71b9
+--- /dev/null
++++ b/src/test/java/io/papermc/paper/scissors/EntitySelectorRangeTest.java
+@@ -0,0 +1,83 @@
++package io.papermc.paper.scissors;
++
++import com.mojang.brigadier.StringReader;
++import com.mojang.brigadier.exceptions.CommandSyntaxException;
++import java.lang.reflect.Field;
++import java.util.List;
++import net.minecraft.advancements.predicates.MinMaxBounds;
++import net.minecraft.commands.arguments.EntityArgument;
++import net.minecraft.commands.arguments.selector.EntitySelector;
++import net.minecraft.commands.arguments.selector.options.EntitySelectorOptions;
++import net.minecraft.world.phys.AABB;
++import org.bukkit.support.environment.AllFeatures;
++import org.junit.jupiter.api.BeforeAll;
++import org.junit.jupiter.api.Test;
++
++import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertThrows;
++
++@AllFeatures
++class EntitySelectorRangeTest {
++
++    @BeforeAll
++    static void bootstrapOptions() {
++        EntitySelectorOptions.bootStrap();
++    }
++
++    @Test
++    void acceptsBoundaryRanges() {
++        assertDoesNotThrow(() -> parse("@e[distance=..1024]"));
++        assertDoesNotThrow(() -> parse("@e[dx=-1024,dy=1024,dz=0]"));
++    }
++
++    @Test
++    void rejectsCrashSizedRanges() {
++        assertThrows(CommandSyntaxException.class, () -> parse("@e[distance=..1025]"));
++        assertThrows(CommandSyntaxException.class, () -> parse("@e[distance=1025..]"));
++        assertThrows(CommandSyntaxException.class, () -> parse("@e[dx=1025]"));
++        assertThrows(CommandSyntaxException.class, () -> parse("@e[dy=-1025]"));
++        assertThrows(CommandSyntaxException.class, () -> parse("@e[dz=1000000000]"));
++    }
++
++    @Test
++    void sanitizesProgrammaticallyConstructedSelectors() throws Exception {
++        final EntitySelector selector = new EntitySelector(
++            Integer.MAX_VALUE,
++            true,
++            true,
++            List.of(),
++            MinMaxBounds.Doubles.atMost(Double.POSITIVE_INFINITY),
++            position -> position,
++            new AABB(
++                Double.NEGATIVE_INFINITY,
++                Double.NEGATIVE_INFINITY,
++                Double.NEGATIVE_INFINITY,
++                Double.POSITIVE_INFINITY,
++                Double.POSITIVE_INFINITY,
++                Double.POSITIVE_INFINITY
++            ),
++            EntitySelector.ORDER_ARBITRARY,
++            false,
++            null,
++            null,
++            null,
++            true
++        );
++
++        final Field rangeField = EntitySelector.class.getDeclaredField("range");
++        rangeField.setAccessible(true);
++        final MinMaxBounds.Doubles range = (MinMaxBounds.Doubles)rangeField.get(selector);
++        final Field aabbField = EntitySelector.class.getDeclaredField("aabb");
++        aabbField.setAccessible(true);
++        final AABB aabb = (AABB)aabbField.get(selector);
++
++        assertEquals(EntitySelector.MAX_RANGE, range.max().orElseThrow());
++        assertEquals(-EntitySelector.MAX_RANGE, aabb.minX);
++        assertEquals(EntitySelector.MAX_RANGE + 1.0, aabb.maxX);
++    }
++
++    private static EntitySelector parse(final String selector) throws CommandSyntaxException {
++        return EntityArgument.entities().parse(new StringReader(selector), true, true);
++    }
++}

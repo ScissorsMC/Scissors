@@ -1,0 +1,30 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Telesphoreo <me@telesphoreo.me>
+Date: Wed, 29 Jul 2026 00:33:58 -0400
+Subject: [PATCH] Prevent duplicate UUID login crashes
+
+A non-player entity sharing a joining player's UUID must be discarded instead of cast to ServerPlayer. This removes the stored collision and lets the player connect without crashing the server.
+
+diff --git a/net/minecraft/server/level/ServerLevel.java b/net/minecraft/server/level/ServerLevel.java
+index 59598bfb95c2f8a38efd92685c46a954dc76739d..f37497cb4b40e0cbe457253f03c7ec708eda070e 100644
+--- a/net/minecraft/server/level/ServerLevel.java
++++ b/net/minecraft/server/level/ServerLevel.java
+@@ -1621,9 +1621,16 @@ public class ServerLevel extends Level implements WorldGenLevel, ServerEntityGet
+     private void addPlayer(final ServerPlayer player) {
+         Entity existing = this.getEntity(player.getUUID());
+         if (existing != null) {
+-            LOGGER.warn("Force-added player with duplicate UUID {}", player.getUUID());
+             existing.unRide();
+-            this.removePlayerImmediately((ServerPlayer)existing, Entity.RemovalReason.DISCARDED);
++            // Scissors start - eliminate entities that would crash a player login through a duplicate UUID
++            if (existing instanceof ServerPlayer existingPlayer) {
++                LOGGER.warn("Removing existing player {} with duplicate UUID {} before adding {}", existingPlayer.getPlainTextName(), player.getUUID(), player.getPlainTextName());
++                this.removePlayerImmediately(existingPlayer, Entity.RemovalReason.DISCARDED);
++            } else {
++                LOGGER.warn("Discarding {} with duplicate player UUID {} before adding {}", existing.getType(), player.getUUID(), player.getPlainTextName());
++                existing.discard();
++            }
++            // Scissors end - eliminate entities that would crash a player login through a duplicate UUID
+         }
+ 
+         this.moonrise$getEntityLookup().addNewEntity(player); // Paper - rewrite chunk system

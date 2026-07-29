@@ -1,0 +1,69 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Telesphoreo <me@telesphoreo.me>
+Date: Wed, 29 Jul 2026 00:52:54 -0400
+Subject: [PATCH] Test NBT string visitor limits
+
+
+diff --git a/src/test/java/io/papermc/paper/scissors/TagVisitorLimitTest.java b/src/test/java/io/papermc/paper/scissors/TagVisitorLimitTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..eb45fb3ebc9bdfc786b300feac9ccaee39406960
+--- /dev/null
++++ b/src/test/java/io/papermc/paper/scissors/TagVisitorLimitTest.java
+@@ -0,0 +1,57 @@
++package io.papermc.paper.scissors;
++
++import net.minecraft.nbt.IntTag;
++import net.minecraft.nbt.ListTag;
++import net.minecraft.nbt.NbtOps;
++import net.minecraft.nbt.SnbtPrinterTagVisitor;
++import net.minecraft.nbt.StringTagVisitor;
++import net.minecraft.nbt.Tag;
++import net.minecraft.nbt.TagParser;
++import net.minecraft.nbt.TextComponentTagVisitor;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++
++import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertInstanceOf;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++@Normal
++class TagVisitorLimitTest {
++
++    @Test
++    void stringVisitorProducesBoundedValidSnbt() throws Exception {
++        final ListTag input = largeList();
++        final StringTagVisitor visitor = new StringTagVisitor();
++        input.accept(visitor);
++
++        final Tag parsed = TagParser.create(NbtOps.INSTANCE).parseFully(visitor.build());
++
++        assertEquals(1024, assertInstanceOf(ListTag.class, parsed).size());
++    }
++
++    @Test
++    void prettyVisitorProducesBoundedValidSnbt() throws Exception {
++        final String rendered = new SnbtPrinterTagVisitor().visit(largeList());
++
++        final Tag parsed = TagParser.create(NbtOps.INSTANCE).parseFully(rendered);
++
++        assertEquals(1024, assertInstanceOf(ListTag.class, parsed).size());
++    }
++
++    @Test
++    void textVisitorFoldsLargeInlineLists() {
++        final String rendered = assertDoesNotThrow(() -> new TextComponentTagVisitor("").visit(largeList()).getString());
++
++        assertTrue(rendered.contains("<...>"));
++        assertTrue(rendered.length() < 2048);
++    }
++
++    private static ListTag largeList() {
++        final ListTag list = new ListTag();
++        for (int i = 0; i < 2048; i++) {
++            list.add(IntTag.valueOf(1));
++        }
++        return list;
++    }
++}

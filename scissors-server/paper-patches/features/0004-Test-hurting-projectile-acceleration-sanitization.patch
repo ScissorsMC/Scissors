@@ -1,0 +1,49 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Telesphoreo <me@telesphoreo.me>
+Date: Wed, 29 Jul 2026 00:40:45 -0400
+Subject: [PATCH] Test hurting projectile acceleration sanitization
+
+
+diff --git a/src/test/java/io/papermc/paper/scissors/AbstractHurtingProjectileTest.java b/src/test/java/io/papermc/paper/scissors/AbstractHurtingProjectileTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..d5db8952d88a06dd0fb284074a9644961ebb2894
+--- /dev/null
++++ b/src/test/java/io/papermc/paper/scissors/AbstractHurtingProjectileTest.java
+@@ -0,0 +1,37 @@
++package io.papermc.paper.scissors;
++
++import java.lang.reflect.InvocationTargetException;
++import java.lang.reflect.Method;
++import net.minecraft.world.entity.projectile.hurtingprojectile.AbstractHurtingProjectile;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++
++@Normal
++class AbstractHurtingProjectileTest {
++
++    @Test
++    void sanitizesNonFiniteAcceleration() {
++        assertEquals(AbstractHurtingProjectile.INITAL_ACCELERATION_POWER, sanitize(Double.NaN));
++        assertEquals(AbstractHurtingProjectile.INITAL_ACCELERATION_POWER, sanitize(Double.POSITIVE_INFINITY));
++        assertEquals(AbstractHurtingProjectile.INITAL_ACCELERATION_POWER, sanitize(Double.NEGATIVE_INFINITY));
++    }
++
++    @Test
++    void boundsFiniteAcceleration() {
++        assertEquals(1024.0, sanitize(Double.MAX_VALUE));
++        assertEquals(-1024.0, sanitize(-Double.MAX_VALUE));
++        assertEquals(0.5, sanitize(0.5));
++    }
++
++    private static double sanitize(final double value) {
++        try {
++            final Method method = AbstractHurtingProjectile.class.getDeclaredMethod("sanitizeAccelerationPowerValue", double.class);
++            method.setAccessible(true);
++            return (double)method.invoke(null, value);
++        } catch (final NoSuchMethodException | IllegalAccessException | InvocationTargetException exception) {
++            throw new AssertionError(exception);
++        }
++    }
++}

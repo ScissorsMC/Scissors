@@ -1,0 +1,174 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Telesphoreo <me@telesphoreo.me>
+Date: Wed, 29 Jul 2026 00:55:22 -0400
+Subject: [PATCH] Bound vehicle collision processing
+
+Boat and both minecart movement implementations previously materialized and processed every nearby entity. Stop entity lookup after the configured limit or a hard cap of 16, preserve the vehicles, and rate-limit overflow logging.
+
+diff --git a/net/minecraft/world/entity/vehicle/VehicleEntity.java b/net/minecraft/world/entity/vehicle/VehicleEntity.java
+index 96b0fa2ebab15a939a5162d23b3ad9b92365d818..9d9aa40526fa6c7117a15312ce412d9e86605c41 100644
+--- a/net/minecraft/world/entity/vehicle/VehicleEntity.java
++++ b/net/minecraft/world/entity/vehicle/VehicleEntity.java
+@@ -1,5 +1,9 @@
+ package net.minecraft.world.entity.vehicle;
+ 
++import com.mojang.logging.LogUtils;
++import java.util.ArrayList;
++import java.util.List;
++import java.util.function.Predicate;
+ import net.minecraft.core.component.DataComponents;
+ import net.minecraft.network.syncher.EntityDataAccessor;
+ import net.minecraft.network.syncher.EntityDataSerializers;
+@@ -16,11 +20,18 @@ import net.minecraft.world.level.Explosion;
+ import net.minecraft.world.level.Level;
+ import net.minecraft.world.level.gameevent.GameEvent;
+ import net.minecraft.world.level.gamerules.GameRules;
++import net.minecraft.world.level.entity.EntityTypeTest;
++import net.minecraft.world.phys.AABB;
++import org.slf4j.Logger;
+ 
+ public abstract class VehicleEntity extends Entity {
++    private static final Logger LOGGER = LogUtils.getLogger();
++    private static final int MAX_VEHICLE_COLLISIONS = 16;
++    private static final int COLLISION_OVERFLOW_WARNING_INTERVAL_TICKS = 100;
+     protected static final EntityDataAccessor<Integer> DATA_ID_HURT = SynchedEntityData.defineId(VehicleEntity.class, EntityDataSerializers.INT);
+     protected static final EntityDataAccessor<Integer> DATA_ID_HURTDIR = SynchedEntityData.defineId(VehicleEntity.class, EntityDataSerializers.INT);
+     protected static final EntityDataAccessor<Float> DATA_ID_DAMAGE = SynchedEntityData.defineId(VehicleEntity.class, EntityDataSerializers.FLOAT);
++    private int nextCollisionOverflowWarningTick;
+ 
+     public VehicleEntity(final EntityType<?> type, final Level level) {
+         super(type, level);
+@@ -131,6 +142,39 @@ public abstract class VehicleEntity extends Entity {
+         return this.entityData.get(DATA_ID_HURTDIR);
+     }
+ 
++    // Scissors start - bound collision queries without destroying legitimate crowded vehicles
++    protected List<Entity> getCollisionEntities(final AABB hitbox, final Predicate<? super Entity> predicate) {
++        int configuredLimit = this.level().isClientSide() ? MAX_VEHICLE_COLLISIONS : this.level().paperConfig().collisions.maxEntityCollisions;
++        int collisionLimit = collisionLimit(configuredLimit);
++        List<Entity> entities = new ArrayList<>(collisionLimit + 1);
++        this.level().getEntities(
++            EntityTypeTest.forClass(Entity.class),
++            hitbox,
++            entity -> entity != this && predicate.test(entity),
++            entities,
++            collisionLimit + 1
++        );
++        if (entities.size() > collisionLimit) {
++            if (!this.level().isClientSide() && this.tickCount >= this.nextCollisionOverflowWarningTick) {
++                this.nextCollisionOverflowWarningTick = this.tickCount + COLLISION_OVERFLOW_WARNING_INTERVAL_TICKS;
++                LOGGER.warn(
++                    "Limited collision processing for {} with UUID {} at {} to {} entities",
++                    this.getType(),
++                    this.getUUID(),
++                    this.blockPosition().toShortString(),
++                    collisionLimit
++                );
++            }
++            return entities.subList(0, collisionLimit);
++        }
++        return entities;
++    }
++
++    static int collisionLimit(final int configuredLimit) {
++        return configuredLimit > 0 ? Math.min(configuredLimit, MAX_VEHICLE_COLLISIONS) : MAX_VEHICLE_COLLISIONS;
++    }
++    // Scissors end - bound collision queries without destroying legitimate crowded vehicles
++
+     protected void destroy(final ServerLevel level, final DamageSource source) {
+         this.destroy(level, this.getDropItem());
+     }
+diff --git a/net/minecraft/world/entity/vehicle/boat/AbstractBoat.java b/net/minecraft/world/entity/vehicle/boat/AbstractBoat.java
+index 3fcd534cee1f605a710ffc43eff4b5106c7dd40c..42625241c06e0713f634e99e7791e15e2e0cf8fe 100644
+--- a/net/minecraft/world/entity/vehicle/boat/AbstractBoat.java
++++ b/net/minecraft/world/entity/vehicle/boat/AbstractBoat.java
+@@ -320,7 +320,7 @@ public abstract class AbstractBoat extends VehicleEntity implements Leashable {
+             }
+         }
+ 
+-        List<Entity> entities = this.level().getEntities(this, this.getBoundingBox().inflate(0.2F, -0.01F, 0.2F), EntitySelector.pushableBy(this));
++        List<Entity> entities = this.getCollisionEntities(this.getBoundingBox().inflate(0.2F, -0.01F, 0.2F), EntitySelector.pushableBy(this)); // Scissors - bound collision work
+         if (!entities.isEmpty()) {
+             boolean addNewPassengers = !this.level().isClientSide() && !(this.getControllingPassenger() instanceof Player);
+ 
+diff --git a/net/minecraft/world/entity/vehicle/minecart/AbstractMinecart.java b/net/minecraft/world/entity/vehicle/minecart/AbstractMinecart.java
+index 5ad77636d0681d1f0341cff4482ba6ad52f3583b..d63739ecab7ca4c2ec75494d1530783b61c20255 100644
+--- a/net/minecraft/world/entity/vehicle/minecart/AbstractMinecart.java
++++ b/net/minecraft/world/entity/vehicle/minecart/AbstractMinecart.java
+@@ -4,8 +4,10 @@ import com.google.common.collect.ImmutableList;
+ import com.google.common.collect.ImmutableMap;
+ import com.google.common.collect.Maps;
+ import com.mojang.datafixers.util.Pair;
++import java.util.List;
+ import java.util.Map;
+ import java.util.Optional;
++import java.util.function.Predicate;
+ import net.minecraft.core.BlockPos;
+ import net.minecraft.core.Direction;
+ import net.minecraft.core.Vec3i;
+@@ -158,6 +160,12 @@ public abstract class AbstractMinecart extends VehicleEntity {
+         return this.behavior;
+     }
+ 
++    // Scissors - expose the shared bounded query to the minecart behavior implementations in this package
++    @Override
++    protected List<Entity> getCollisionEntities(final AABB hitbox, final Predicate<? super Entity> predicate) {
++        return super.getCollisionEntities(hitbox, predicate);
++    }
++
+     @Override
+     protected Entity.MovementEmission getMovementEmission() {
+         return Entity.MovementEmission.EVENTS;
+diff --git a/net/minecraft/world/entity/vehicle/minecart/NewMinecartBehavior.java b/net/minecraft/world/entity/vehicle/minecart/NewMinecartBehavior.java
+index eacf2358d0eeb9a4b07181bb01e78e781c2d069d..70ebeb51a1518e0206f21109ff066ec5c41961fc 100644
+--- a/net/minecraft/world/entity/vehicle/minecart/NewMinecartBehavior.java
++++ b/net/minecraft/world/entity/vehicle/minecart/NewMinecartBehavior.java
+@@ -522,7 +522,7 @@ public class NewMinecartBehavior extends MinecartBehavior {
+ 
+     public boolean pickupEntities(final AABB hitbox) {
+         if (this.minecart.isRideable() && !this.minecart.isVehicle()) {
+-            List<Entity> entities = this.level().getEntities(this.minecart, hitbox, EntitySelector.pushableBy(this.minecart));
++            List<Entity> entities = this.minecart.getCollisionEntities(hitbox, EntitySelector.pushableBy(this.minecart)); // Scissors - bound collision work
+             if (!entities.isEmpty()) {
+                 for (Entity entity : entities) {
+                     if (!(entity instanceof Player)
+@@ -552,7 +552,7 @@ public class NewMinecartBehavior extends MinecartBehavior {
+     public boolean pushEntities(final AABB hitbox) {
+         boolean pushed = false;
+         if (this.minecart.isRideable()) {
+-            List<Entity> entities = this.level().getEntities(this.minecart, hitbox, EntitySelector.pushableBy(this.minecart));
++            List<Entity> entities = this.minecart.getCollisionEntities(hitbox, EntitySelector.pushableBy(this.minecart)); // Scissors - bound collision work
+             if (!entities.isEmpty()) {
+                 for (Entity entity : entities) {
+                     if (entity instanceof Player
+@@ -577,7 +577,7 @@ public class NewMinecartBehavior extends MinecartBehavior {
+                 }
+             }
+         } else {
+-            for (Entity entity : this.level().getEntities(this.minecart, hitbox)) {
++            for (Entity entity : this.minecart.getCollisionEntities(hitbox, EntitySelector.NO_SPECTATORS)) { // Scissors - bound collision work
+                 if (!this.minecart.hasPassenger(entity) && entity.isPushable() && entity instanceof AbstractMinecart) {
+                     // CraftBukkit start
+                     org.bukkit.event.vehicle.VehicleEntityCollisionEvent collisionEvent = new org.bukkit.event.vehicle.VehicleEntityCollisionEvent(
+diff --git a/net/minecraft/world/entity/vehicle/minecart/OldMinecartBehavior.java b/net/minecraft/world/entity/vehicle/minecart/OldMinecartBehavior.java
+index 3c8694e75cabd68690d9139ecedc9e079db482c5..3707cf1bfd5332c8eb74245492d55117e81f9585 100644
+--- a/net/minecraft/world/entity/vehicle/minecart/OldMinecartBehavior.java
++++ b/net/minecraft/world/entity/vehicle/minecart/OldMinecartBehavior.java
+@@ -367,7 +367,7 @@ public class OldMinecartBehavior extends MinecartBehavior {
+     public boolean pushAndPickupEntities() {
+         AABB hitbox = this.minecart.getBoundingBox().inflate(0.2F, 0.0, 0.2F);
+         if (this.minecart.isRideable() && this.getDeltaMovement().horizontalDistanceSqr() >= 0.01) {
+-            List<Entity> entities = this.level().getEntities(this.minecart, hitbox, EntitySelector.pushableBy(this.minecart));
++            List<Entity> entities = this.minecart.getCollisionEntities(hitbox, EntitySelector.pushableBy(this.minecart)); // Scissors - bound collision work
+             if (!entities.isEmpty()) {
+                 for (Entity entity : entities) {
+                     if (!(entity instanceof Player)
+@@ -396,7 +396,7 @@ public class OldMinecartBehavior extends MinecartBehavior {
+                 }
+             }
+         } else {
+-            for (Entity entity : this.level().getEntities(this.minecart, hitbox)) {
++            for (Entity entity : this.minecart.getCollisionEntities(hitbox, EntitySelector.NO_SPECTATORS)) { // Scissors - bound collision work
+                 if (!this.minecart.hasPassenger(entity) && entity.isPushable() && entity instanceof AbstractMinecart) {
+                     // CraftBukkit start
+                     org.bukkit.event.vehicle.VehicleEntityCollisionEvent collisionEvent = new org.bukkit.event.vehicle.VehicleEntityCollisionEvent(

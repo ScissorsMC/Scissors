@@ -1,0 +1,514 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Telesphoreo <me@telesphoreo.me>
+Date: Wed, 29 Jul 2026 00:52:54 -0400
+Subject: [PATCH] Bound NBT string visitors
+
+Diagnostic and component NBT renderers could traverse unbounded wide or deep trees. Share a 1024-element budget across each complete render, cap depth at 64, and preserve a valid truncated SNBT prefix where applicable.
+
+diff --git a/net/minecraft/nbt/SnbtPrinterTagVisitor.java b/net/minecraft/nbt/SnbtPrinterTagVisitor.java
+index 65a7bbb63112bc2b2dd49353f871846d07682541..613fc3053005e916b2d7d1fb67d1b3854be9d258 100644
+--- a/net/minecraft/nbt/SnbtPrinterTagVisitor.java
++++ b/net/minecraft/nbt/SnbtPrinterTagVisitor.java
+@@ -14,6 +14,8 @@ import java.util.regex.Pattern;
+ import net.minecraft.util.Util;
+ 
+ public class SnbtPrinterTagVisitor implements TagVisitor {
++    private static final int MAX_DEPTH = 64;
++    private static final int MAX_VISITED_ELEMENTS = 1024;
+     private static final Map<String, List<String>> KEY_ORDER = Util.make(Maps.newHashMap(), map -> {
+         map.put("{}", Lists.newArrayList("DataVersion", "author", "size", "data", "entities", "palette", "palettes"));
+         map.put("{}.data.[].{}", Lists.newArrayList("pos", "state", "nbt"));
+@@ -33,16 +35,22 @@ public class SnbtPrinterTagVisitor implements TagVisitor {
+     private final String indentation;
+     private final int depth;
+     private final List<String> path;
++    private final ElementBudget elementBudget;
+     private String result = "";
+ 
+     public SnbtPrinterTagVisitor() {
+-        this("    ", 0, Lists.newArrayList());
++        this("    ", 0, Lists.newArrayList(), new ElementBudget());
+     }
+ 
+     public SnbtPrinterTagVisitor(final String indentation, final int depth, final List<String> path) {
++        this(indentation, depth, path, new ElementBudget());
++    }
++
++    private SnbtPrinterTagVisitor(final String indentation, final int depth, final List<String> path, final ElementBudget elementBudget) {
+         this.indentation = indentation;
+         this.depth = depth;
+         this.path = path;
++        this.elementBudget = elementBudget;
+     }
+ 
+     public String visit(final Tag tag) {
+@@ -90,9 +98,10 @@ public class SnbtPrinterTagVisitor implements TagVisitor {
+         StringBuilder builder = new StringBuilder("[").append("B").append(";");
+         byte[] data = tag.getAsByteArray();
+ 
+-        for (int i = 0; i < data.length; i++) {
++        int rendered = 0;
++        for (int i = 0; i < data.length && this.elementBudget.consume(); i++) {
+             builder.append(" ").append(data[i]).append("B");
+-            if (i != data.length - 1) {
++            if (++rendered < data.length && this.elementBudget.hasRemaining()) {
+                 builder.append(ELEMENT_SEPARATOR);
+             }
+         }
+@@ -106,9 +115,10 @@ public class SnbtPrinterTagVisitor implements TagVisitor {
+         StringBuilder builder = new StringBuilder("[").append("I").append(";");
+         int[] data = tag.getAsIntArray();
+ 
+-        for (int i = 0; i < data.length; i++) {
++        int rendered = 0;
++        for (int i = 0; i < data.length && this.elementBudget.consume(); i++) {
+             builder.append(" ").append(data[i]);
+-            if (i != data.length - 1) {
++            if (++rendered < data.length && this.elementBudget.hasRemaining()) {
+                 builder.append(ELEMENT_SEPARATOR);
+             }
+         }
+@@ -123,9 +133,10 @@ public class SnbtPrinterTagVisitor implements TagVisitor {
+         StringBuilder builder = new StringBuilder("[").append("L").append(";");
+         long[] data = tag.getAsLongArray();
+ 
+-        for (int i = 0; i < data.length; i++) {
++        int rendered = 0;
++        for (int i = 0; i < data.length && this.elementBudget.consume(); i++) {
+             builder.append(" ").append(data[i]).append("L");
+-            if (i != data.length - 1) {
++            if (++rendered < data.length && this.elementBudget.hasRemaining()) {
+                 builder.append(ELEMENT_SEPARATOR);
+             }
+         }
+@@ -136,7 +147,7 @@ public class SnbtPrinterTagVisitor implements TagVisitor {
+ 
+     @Override
+     public void visitList(final ListTag tag) {
+-        if (tag.isEmpty()) {
++        if (tag.isEmpty() || this.depth >= MAX_DEPTH || !this.elementBudget.hasRemaining()) {
+             this.result = "[]";
+         } else {
+             StringBuilder builder = new StringBuilder("[");
+@@ -146,10 +157,12 @@ public class SnbtPrinterTagVisitor implements TagVisitor {
+                 builder.append("\n");
+             }
+ 
+-            for (int i = 0; i < tag.size(); i++) {
++            int rendered = 0;
++            for (int i = 0; i < tag.size() && this.elementBudget.consume(); i++) {
+                 builder.append(Strings.repeat(indentation, this.depth + 1));
+-                builder.append(new SnbtPrinterTagVisitor(indentation, this.depth + 1, this.path).visit(tag.get(i)));
+-                if (i != tag.size() - 1) {
++                builder.append(new SnbtPrinterTagVisitor(indentation, this.depth + 1, this.path, this.elementBudget).visit(tag.get(i)));
++                rendered++;
++                if (rendered < tag.size() && this.elementBudget.hasRemaining()) {
+                     builder.append(ELEMENT_SEPARATOR).append(indentation.isEmpty() ? " " : "\n");
+                 }
+             }
+@@ -166,7 +179,7 @@ public class SnbtPrinterTagVisitor implements TagVisitor {
+ 
+     @Override
+     public void visitCompound(final CompoundTag tag) {
+-        if (tag.isEmpty()) {
++        if (tag.isEmpty() || this.depth >= MAX_DEPTH || !this.elementBudget.hasRemaining()) {
+             this.result = "{}";
+         } else {
+             StringBuilder builder = new StringBuilder("{");
+@@ -176,10 +189,22 @@ public class SnbtPrinterTagVisitor implements TagVisitor {
+                 builder.append("\n");
+             }
+ 
+-            Collection<String> keys = this.getKeys(tag);
++            Collection<String> keys;
++            if (tag.size() <= this.elementBudget.remaining()) {
++                keys = this.getKeys(tag);
++            } else {
++                List<String> limitedKeys = Lists.newArrayListWithCapacity(this.elementBudget.remaining());
++                for (String key : tag.keySet()) {
++                    if (limitedKeys.size() >= this.elementBudget.remaining()) {
++                        break;
++                    }
++                    limitedKeys.add(key);
++                }
++                keys = limitedKeys;
++            }
+             Iterator<String> iterator = keys.iterator();
+ 
+-            while (iterator.hasNext()) {
++            while (iterator.hasNext() && this.elementBudget.consume()) {
+                 String key = iterator.next();
+                 Tag value = tag.get(key);
+                 this.pushPath(key);
+@@ -187,9 +212,9 @@ public class SnbtPrinterTagVisitor implements TagVisitor {
+                     .append(handleEscapePretty(key))
+                     .append(NAME_VALUE_SEPARATOR)
+                     .append(" ")
+-                    .append(new SnbtPrinterTagVisitor(indentation, this.depth + 1, this.path).visit(value));
++                    .append(new SnbtPrinterTagVisitor(indentation, this.depth + 1, this.path, this.elementBudget).visit(value));
+                 this.popPath();
+-                if (iterator.hasNext()) {
++                if (iterator.hasNext() && this.elementBudget.hasRemaining()) {
+                     builder.append(ELEMENT_SEPARATOR).append(indentation.isEmpty() ? " " : "\n");
+                 }
+             }
+@@ -245,4 +270,26 @@ public class SnbtPrinterTagVisitor implements TagVisitor {
+     @Override
+     public void visitEnd(final EndTag tag) {
+     }
++
++    // Scissors start - share one breadth budget across recursively-created pretty printers
++    private static final class ElementBudget {
++        private int remaining = MAX_VISITED_ELEMENTS;
++
++        private boolean consume() {
++            if (this.remaining <= 0) {
++                return false;
++            }
++            this.remaining--;
++            return true;
++        }
++
++        private boolean hasRemaining() {
++            return this.remaining > 0;
++        }
++
++        private int remaining() {
++            return this.remaining;
++        }
++    }
++    // Scissors end - share one breadth budget across recursively-created pretty printers
+ }
+diff --git a/net/minecraft/nbt/StringTagVisitor.java b/net/minecraft/nbt/StringTagVisitor.java
+index 734ae0633aa5971e7df449248cd6c2e511767e53..96311f43e9483978bba342e1e7111b763b8fe5fb 100644
+--- a/net/minecraft/nbt/StringTagVisitor.java
++++ b/net/minecraft/nbt/StringTagVisitor.java
+@@ -6,8 +6,12 @@ import java.util.Map.Entry;
+ import java.util.regex.Pattern;
+ 
+ public class StringTagVisitor implements TagVisitor {
++    private static final int MAX_DEPTH = 64;
++    private static final int MAX_VISITED_ELEMENTS = 1024;
+     private static final Pattern UNQUOTED_KEY_MATCH = Pattern.compile("[A-Za-z._]+[A-Za-z0-9._+-]*");
+     private final StringBuilder builder = new StringBuilder();
++    private int remainingElements = MAX_VISITED_ELEMENTS;
++    private int depth;
+ 
+     public String build() {
+         return this.builder.toString();
+@@ -53,7 +57,7 @@ public class StringTagVisitor implements TagVisitor {
+         this.builder.append("[B;");
+         byte[] data = tag.getAsByteArray();
+ 
+-        for (int i = 0; i < data.length; i++) {
++        for (int i = 0; i < data.length && this.consumeElement(); i++) {
+             if (i != 0) {
+                 this.builder.append(',');
+             }
+@@ -69,7 +73,7 @@ public class StringTagVisitor implements TagVisitor {
+         this.builder.append("[I;");
+         int[] data = tag.getAsIntArray();
+ 
+-        for (int i = 0; i < data.length; i++) {
++        for (int i = 0; i < data.length && this.consumeElement(); i++) {
+             if (i != 0) {
+                 this.builder.append(',');
+             }
+@@ -85,7 +89,7 @@ public class StringTagVisitor implements TagVisitor {
+         this.builder.append("[L;");
+         long[] data = tag.getAsLongArray();
+ 
+-        for (int i = 0; i < data.length; i++) {
++        for (int i = 0; i < data.length && this.consumeElement(); i++) {
+             if (i != 0) {
+                 this.builder.append(',');
+             }
+@@ -99,13 +103,23 @@ public class StringTagVisitor implements TagVisitor {
+     @Override
+     public void visitList(final ListTag tag) {
+         this.builder.append('[');
++        if (this.depth >= MAX_DEPTH) {
++            this.builder.append(']');
++            return;
++        }
+ 
+-        for (int i = 0; i < tag.size(); i++) {
+-            if (i != 0) {
++        int rendered = 0;
++        for (int i = 0; i < tag.size() && this.consumeElement(); i++) {
++            if (rendered++ != 0) {
+                 this.builder.append(',');
+             }
+ 
+-            tag.get(i).accept(this);
++            this.depth++;
++            try {
++                tag.get(i).accept(this);
++            } finally {
++                this.depth--;
++            }
+         }
+ 
+         this.builder.append(']');
+@@ -114,18 +128,39 @@ public class StringTagVisitor implements TagVisitor {
+     @Override
+     public void visitCompound(final CompoundTag tag) {
+         this.builder.append('{');
+-        List<Entry<String, Tag>> entries = new ArrayList<>(tag.entrySet());
+-        entries.sort(Entry.comparingByKey());
++        if (this.depth >= MAX_DEPTH) {
++            this.builder.append('}');
++            return;
++        }
+ 
+-        for (int i = 0; i < entries.size(); i++) {
++        List<Entry<String, Tag>> entries = new ArrayList<>(Math.min(tag.size(), this.remainingElements));
++        if (tag.size() <= this.remainingElements) {
++            entries.addAll(tag.entrySet());
++            entries.sort(Entry.comparingByKey());
++        } else {
++            for (Entry<String, Tag> entry : tag.entrySet()) {
++                if (entries.size() >= this.remainingElements) {
++                    break;
++                }
++                entries.add(entry);
++            }
++        }
++
++        int rendered = 0;
++        for (int i = 0; i < entries.size() && this.consumeElement(); i++) {
+             Entry<String, Tag> entry = entries.get(i);
+-            if (i != 0) {
++            if (rendered++ != 0) {
+                 this.builder.append(',');
+             }
+ 
+             this.handleKeyEscape(entry.getKey());
+             this.builder.append(':');
+-            entry.getValue().accept(this);
++            this.depth++;
++            try {
++                entry.getValue().accept(this);
++            } finally {
++                this.depth--;
++            }
+         }
+ 
+         this.builder.append('}');
+@@ -139,6 +174,15 @@ public class StringTagVisitor implements TagVisitor {
+         }
+     }
+ 
++    // Scissors - use one budget for the complete rendering tree rather than a per-container limit
++    private boolean consumeElement() {
++        if (this.remainingElements <= 0) {
++            return false;
++        }
++        this.remainingElements--;
++        return true;
++    }
++
+     @Override
+     public void visitEnd(final EndTag tag) {
+         this.builder.append("END");
+diff --git a/net/minecraft/nbt/TextComponentTagVisitor.java b/net/minecraft/nbt/TextComponentTagVisitor.java
+index 6273c3b9563d4ac6d1e856f06058ec599ebcc60d..79aba92c4a8fc7c6131004a28c4741ceefab3e4d 100644
+--- a/net/minecraft/nbt/TextComponentTagVisitor.java
++++ b/net/minecraft/nbt/TextComponentTagVisitor.java
+@@ -20,7 +20,8 @@ public class TextComponentTagVisitor implements TagVisitor {
+     private static final Logger LOGGER = LogUtils.getLogger();
+     private static final int INLINE_LIST_THRESHOLD = 8;
+     private static final int MAX_DEPTH = 64;
+-    private static final int MAX_LENGTH = 128;
++    private static final int MAX_CONTAINER_ELEMENTS = 128;
++    private static final int MAX_VISITED_ELEMENTS = 1024;
+     private static final Pattern SIMPLE_VALUE = Pattern.compile("[A-Za-z0-9._+-]+");
+     private static final Component NEWLINE = Component.literal("\n");
+     private static final Component ELEMENT_SPACING = Component.literal(" ");
+@@ -29,6 +30,7 @@ public class TextComponentTagVisitor implements TagVisitor {
+     private final boolean sortKeys;
+     private int indentDepth;
+     private int depth;
++    private int remainingElements = MAX_VISITED_ELEMENTS;
+     private final MutableComponent result = Component.empty();
+ 
+     public TextComponentTagVisitor(final String indentation) {
+@@ -109,14 +111,16 @@ public class TextComponentTagVisitor implements TagVisitor {
+             .append(TextComponentTagVisitor.Token.LIST_TYPE_SEPARATOR);
+         byte[] data = tag.getAsByteArray();
+ 
+-        for (int i = 0; i < data.length && i < 128; i++) {
++        int rendered = 0;
++        for (int i = 0; i < data.length && i < MAX_CONTAINER_ELEMENTS && this.consumeElement(); i++) {
+             this.append(ELEMENT_SPACING).append(String.valueOf(data[i]), this.styling.numberStyle()).append(TextComponentTagVisitor.Token.BYTE_SUFFIX);
+-            if (i != data.length - 1) {
++            rendered++;
++            if (rendered < data.length) {
+                 this.append(TextComponentTagVisitor.Token.ELEMENT_SEPARATOR);
+             }
+         }
+ 
+-        if (data.length > 128) {
++        if (rendered < data.length) {
+             this.append(TextComponentTagVisitor.Token.FOLDED);
+         }
+ 
+@@ -130,14 +134,16 @@ public class TextComponentTagVisitor implements TagVisitor {
+             .append(TextComponentTagVisitor.Token.LIST_TYPE_SEPARATOR);
+         int[] data = tag.getAsIntArray();
+ 
+-        for (int i = 0; i < data.length && i < 128; i++) {
++        int rendered = 0;
++        for (int i = 0; i < data.length && i < MAX_CONTAINER_ELEMENTS && this.consumeElement(); i++) {
+             this.append(ELEMENT_SPACING).append(String.valueOf(data[i]), this.styling.numberStyle());
+-            if (i != data.length - 1) {
++            rendered++;
++            if (rendered < data.length) {
+                 this.append(TextComponentTagVisitor.Token.ELEMENT_SEPARATOR);
+             }
+         }
+ 
+-        if (data.length > 128) {
++        if (rendered < data.length) {
+             this.append(TextComponentTagVisitor.Token.FOLDED);
+         }
+ 
+@@ -151,14 +157,16 @@ public class TextComponentTagVisitor implements TagVisitor {
+             .append(TextComponentTagVisitor.Token.LIST_TYPE_SEPARATOR);
+         long[] data = tag.getAsLongArray();
+ 
+-        for (int i = 0; i < data.length && i < 128; i++) {
++        int rendered = 0;
++        for (int i = 0; i < data.length && i < MAX_CONTAINER_ELEMENTS && this.consumeElement(); i++) {
+             this.append(ELEMENT_SPACING).append(String.valueOf(data[i]), this.styling.numberStyle()).append(TextComponentTagVisitor.Token.LONG_SUFFIX);
+-            if (i != data.length - 1) {
++            rendered++;
++            if (rendered < data.length) {
+                 this.append(TextComponentTagVisitor.Token.ELEMENT_SEPARATOR);
+             }
+         }
+ 
+-        if (data.length > 128) {
++        if (rendered < data.length) {
+             this.append(TextComponentTagVisitor.Token.FOLDED);
+         }
+ 
+@@ -188,14 +196,22 @@ public class TextComponentTagVisitor implements TagVisitor {
+         } else if (!shouldWrapListElements(tag)) {
+             this.append(TextComponentTagVisitor.Token.LIST_OPEN);
+ 
+-            for (int i = 0; i < tag.size(); i++) {
+-                if (i != 0) {
++            int rendered = 0;
++            for (int i = 0; i < tag.size() && i < MAX_CONTAINER_ELEMENTS && this.consumeElement(); i++) {
++                if (rendered++ != 0) {
+                     this.append(TextComponentTagVisitor.Token.ELEMENT_SEPARATOR).append(ELEMENT_SPACING);
+                 }
+ 
+                 this.appendSubTag(tag.get(i), false);
+             }
+ 
++            if (rendered < tag.size()) {
++                if (rendered != 0) {
++                    this.append(TextComponentTagVisitor.Token.ELEMENT_SEPARATOR).append(ELEMENT_SPACING);
++                }
++                this.append(TextComponentTagVisitor.Token.FOLDED);
++            }
++
+             this.append(TextComponentTagVisitor.Token.LIST_CLOSE);
+         } else {
+             this.append(TextComponentTagVisitor.Token.LIST_OPEN);
+@@ -206,15 +222,20 @@ public class TextComponentTagVisitor implements TagVisitor {
+             Component entryIndent = Component.literal(this.indentation.repeat(this.indentDepth + 1));
+             Component elementSpacing = this.indentation.isEmpty() ? ELEMENT_SPACING : NEWLINE;
+ 
+-            for (int i = 0; i < tag.size() && i < 128; i++) {
++            int rendered = 0;
++            for (int i = 0; i < tag.size() && i < MAX_CONTAINER_ELEMENTS && this.consumeElement(); i++) {
+                 this.append(entryIndent);
+                 this.appendSubTag(tag.get(i), true);
+-                if (i != tag.size() - 1) {
++                rendered++;
++                if (rendered < tag.size() && rendered < MAX_CONTAINER_ELEMENTS && this.remainingElements > 0) {
+                     this.append(TextComponentTagVisitor.Token.ELEMENT_SEPARATOR).append(elementSpacing);
+                 }
+             }
+ 
+-            if (tag.size() > 128) {
++            if (rendered < tag.size()) {
++                if (rendered != 0) {
++                    this.append(TextComponentTagVisitor.Token.ELEMENT_SEPARATOR).append(elementSpacing);
++                }
+                 this.append(entryIndent).append(TextComponentTagVisitor.Token.FOLDED);
+             }
+ 
+@@ -236,13 +257,21 @@ public class TextComponentTagVisitor implements TagVisitor {
+                 .append(TextComponentTagVisitor.Token.STRUCT_CLOSE);
+         } else {
+             this.append(TextComponentTagVisitor.Token.STRUCT_OPEN);
++            int keyLimit = Math.min(MAX_CONTAINER_ELEMENTS, this.remainingElements);
+             Collection<String> keys;
+-            if (this.sortKeys) {
++            if (this.sortKeys && tag.size() <= keyLimit) {
+                 List<String> keyCopy = new ArrayList<>(tag.keySet());
+                 Collections.sort(keyCopy);
+                 keys = keyCopy;
+             } else {
+-                keys = tag.keySet();
++                List<String> keyCopy = new ArrayList<>(keyLimit);
++                for (String key : tag.keySet()) {
++                    if (keyCopy.size() >= keyLimit) {
++                        break;
++                    }
++                    keyCopy.add(key);
++                }
++                keys = keyCopy;
+             }
+ 
+             if (!this.indentation.isEmpty()) {
+@@ -253,18 +282,27 @@ public class TextComponentTagVisitor implements TagVisitor {
+             Component elementSpacing = this.indentation.isEmpty() ? ELEMENT_SPACING : NEWLINE;
+             Iterator<String> iterator = keys.iterator();
+ 
+-            while (iterator.hasNext()) {
++            int rendered = 0;
++            while (iterator.hasNext() && this.consumeElement()) {
+                 String key = iterator.next();
+                 this.append(entryIndent)
+                     .append(this.handleEscapePretty(key))
+                     .append(TextComponentTagVisitor.Token.NAME_VALUE_SEPARATOR)
+                     .append(ELEMENT_SPACING);
+                 this.appendSubTag(tag.get(key), true);
+-                if (iterator.hasNext()) {
++                rendered++;
++                if (iterator.hasNext() && this.remainingElements > 0) {
+                     this.append(TextComponentTagVisitor.Token.ELEMENT_SEPARATOR).append(elementSpacing);
+                 }
+             }
+ 
++            if (rendered < tag.size()) {
++                if (rendered != 0) {
++                    this.append(TextComponentTagVisitor.Token.ELEMENT_SEPARATOR).append(elementSpacing);
++                }
++                this.append(entryIndent).append(TextComponentTagVisitor.Token.FOLDED);
++            }
++
+             if (!this.indentation.isEmpty()) {
+                 this.append(NEWLINE).append(Component.literal(this.indentation.repeat(this.indentDepth)));
+             }
+@@ -291,6 +329,15 @@ public class TextComponentTagVisitor implements TagVisitor {
+         }
+     }
+ 
++    // Scissors - cap the complete rendered tree in addition to each individual container
++    private boolean consumeElement() {
++        if (this.remainingElements <= 0) {
++            return false;
++        }
++        this.remainingElements--;
++        return true;
++    }
++
+     private Component handleEscapePretty(final String input) {
+         if (SIMPLE_VALUE.matcher(input).matches()) {
+             return Component.literal(input).withStyle(this.styling.keyStyle());
