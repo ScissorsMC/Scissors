@@ -254,8 +254,8 @@ Use the narrowest relevant check first, then verify the complete patch state:
 For documentation-only changes, patch application is sufficient when the build configuration did not change. For build,
 API, server, or Minecraft changes, run the build.
 
-The `build` task verifies the modules but does not create a standalone server. When a task changes distribution packaging
-or requires a runnable artifact, also run:
+The `build` task verifies the modules but does not create a standalone server. When a task changes distribution packaging,
+requires a runnable artifact, or will be handed to the user for interactive runtime testing, also run:
 
 ```shell
 ./gradlew :scissors-server:createPaperclipJar
@@ -263,6 +263,8 @@ or requires a runnable artifact, also run:
 
 The deployable artifact is `scissors-server/build/libs/scissors-paperclip-<version>.jar`.
 `scissors-server-<version>.jar` is a thin development JAR and must not be used as a standalone server.
+For a runtime-testing handoff, create the Paperclip JAR after the intended changes reach their final patch state so the
+user does not need to build it. This task is not required for intermediate build or test cycles.
 
 After verification:
 
