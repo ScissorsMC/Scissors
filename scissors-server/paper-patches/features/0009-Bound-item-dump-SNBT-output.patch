@@ -1,0 +1,20 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Telesphoreo <me@telesphoreo.me>
+Date: Wed, 29 Jul 2026 01:39:41 -0400
+Subject: [PATCH] Bound item dump SNBT output
+
+Use the explicitly bounded pretty printer for operator-facing item diagnostics so hostile components cannot create unbounded command output.
+
+diff --git a/src/main/java/io/papermc/paper/command/subcommands/DumpItemCommand.java b/src/main/java/io/papermc/paper/command/subcommands/DumpItemCommand.java
+index dc84b7c3746f1259d5df729aff4c5f3616c156e1..d6e057057ea32cbdbb8e01a9b583eeda412e13a5 100644
+--- a/src/main/java/io/papermc/paper/command/subcommands/DumpItemCommand.java
++++ b/src/main/java/io/papermc/paper/command/subcommands/DumpItemCommand.java
+@@ -123,7 +123,7 @@ public final class DumpItemCommand implements PaperSubcommand {
+             text("=", WHITE),
+             PaperAdventure.asAdventure(NbtUtils.toPrettyComponent(serialized))
+         ));
+-        copyOutput.accept(path + "=" + new SnbtPrinterTagVisitor("", 0, new ArrayList<>()).visit(serialized));
++        copyOutput.accept(path + "=" + SnbtPrinterTagVisitor.bounded("", 0, new ArrayList<>()).visit(serialized)); // Scissors - bound diagnostic output
+     }
+ 
+     @Override

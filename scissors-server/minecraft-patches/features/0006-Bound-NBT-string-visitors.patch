@@ -3,22 +3,90 @@ From: Telesphoreo <me@telesphoreo.me>
 Date: Wed, 29 Jul 2026 00:52:54 -0400
 Subject: [PATCH] Bound NBT string visitors
 
-Diagnostic and component NBT renderers could traverse unbounded wide or deep trees. Share a 1024-element budget across each complete render, cap depth at 64, and preserve a valid truncated SNBT prefix where applicable.
+Use a shared 1024-element and 64-level budget for attacker-facing diagnostic, macro, and component rendering while keeping default SNBT visitors lossless for durable serialization. Produce valid truncated SNBT and rate-limit truncation logging.
 
+diff --git a/net/minecraft/commands/functions/MacroFunction.java b/net/minecraft/commands/functions/MacroFunction.java
+index a24867bc68b6207b851f8cc11f74be1999be8ab4..230fff00a88c699ba3e62bec663f75f55100684d 100644
+--- a/net/minecraft/commands/functions/MacroFunction.java
++++ b/net/minecraft/commands/functions/MacroFunction.java
+@@ -21,6 +21,7 @@ import net.minecraft.nbt.FloatTag;
+ import net.minecraft.nbt.LongTag;
+ import net.minecraft.nbt.ShortTag;
+ import net.minecraft.nbt.StringTag;
++import net.minecraft.nbt.StringTagVisitor;
+ import net.minecraft.nbt.Tag;
+ import net.minecraft.network.chat.Component;
+ import net.minecraft.resources.Identifier;
+@@ -89,7 +90,7 @@ public class MacroFunction<T extends ExecutionCommandSource<T>> implements Comma
+             case ShortTag(short value) -> String.valueOf(value);
+             case LongTag(long value) -> String.valueOf(value);
+             case StringTag(String value) -> value;
+-            default -> tag.toString();
++            default -> StringTagVisitor.bounded(tag); // Scissors - bound attacker-controlled macro substitution
+         };
+     }
+ 
+diff --git a/net/minecraft/nbt/CompoundTag.java b/net/minecraft/nbt/CompoundTag.java
+index b9f6aa790159b2df712244c44c55d6393c837d16..fa338acc301951cd50d016efc72bf4d807cf2de1 100644
+--- a/net/minecraft/nbt/CompoundTag.java
++++ b/net/minecraft/nbt/CompoundTag.java
+@@ -31,7 +31,7 @@ public final class CompoundTag implements Tag {
+                 Tag tag = t.convert(NbtOps.INSTANCE).getValue();
+                 return tag instanceof CompoundTag compoundTag
+                     ? DataResult.success(compoundTag == t.getValue() ? compoundTag.copy() : compoundTag)
+-                    : DataResult.error(() -> "Not a compound tag: " + tag);
++                    : DataResult.error(() -> "Not a compound tag: " + StringTagVisitor.bounded(tag)); // Scissors - bound diagnostic SNBT
+             },
+             t -> new Dynamic<>(NbtOps.INSTANCE, t.copy())
+         );
+@@ -532,7 +532,7 @@ public final class CompoundTag implements Tag {
+         Tag tag = this.get(name);
+         return tag == null
+             ? Optional.empty()
+-            : codec.parse(ops, tag).resultOrPartial(error -> LOGGER.error("Failed to read field ({}={}): {}", name, tag, error));
++            : codec.parse(ops, tag).resultOrPartial(error -> LOGGER.error("Failed to read field ({}={}): {}", name, StringTagVisitor.bounded(tag), error)); // Scissors - bound diagnostic SNBT
+     }
+ 
+     public <T> Optional<T> read(final MapCodec<T> codec) { // Paper - option to read via codec without logging errors - diff on change
+@@ -540,7 +540,7 @@ public final class CompoundTag implements Tag {
+     }
+ 
+     public <T> Optional<T> read(final MapCodec<T> codec, final DynamicOps<Tag> ops) { // Paper - option to read via codec without logging errors - diff on change
+-        return codec.decode(ops, ops.getMap(this).getOrThrow()).resultOrPartial(error -> LOGGER.error("Failed to read value ({}): {}", this, error));
++        return codec.decode(ops, ops.getMap(this).getOrThrow()).resultOrPartial(error -> LOGGER.error("Failed to read value ({}): {}", StringTagVisitor.bounded(this), error)); // Scissors - bound diagnostic SNBT
+     }
+ 
+     // Paper start - option to read via codec without logging errors
 diff --git a/net/minecraft/nbt/SnbtPrinterTagVisitor.java b/net/minecraft/nbt/SnbtPrinterTagVisitor.java
-index 65a7bbb63112bc2b2dd49353f871846d07682541..613fc3053005e916b2d7d1fb67d1b3854be9d258 100644
+index 65a7bbb63112bc2b2dd49353f871846d07682541..2670ab436df089e0ef4d49d97c036336561006fb 100644
 --- a/net/minecraft/nbt/SnbtPrinterTagVisitor.java
 +++ b/net/minecraft/nbt/SnbtPrinterTagVisitor.java
-@@ -14,6 +14,8 @@ import java.util.regex.Pattern;
+@@ -4,16 +4,24 @@ import com.google.common.base.Strings;
+ import com.google.common.collect.Lists;
+ import com.google.common.collect.Maps;
+ import com.google.common.collect.Sets;
++import com.mojang.logging.LogUtils;
+ import java.util.Collection;
+ import java.util.Collections;
+ import java.util.Iterator;
+ import java.util.List;
+ import java.util.Map;
+ import java.util.Set;
++import java.util.concurrent.TimeUnit;
++import java.util.concurrent.atomic.AtomicLong;
+ import java.util.regex.Pattern;
  import net.minecraft.util.Util;
++import org.slf4j.Logger;
  
  public class SnbtPrinterTagVisitor implements TagVisitor {
 +    private static final int MAX_DEPTH = 64;
 +    private static final int MAX_VISITED_ELEMENTS = 1024;
++    private static final Logger LOGGER = LogUtils.getLogger();
++    private static final AtomicLong NEXT_TRUNCATION_WARNING_NANOS = new AtomicLong();
      private static final Map<String, List<String>> KEY_ORDER = Util.make(Maps.newHashMap(), map -> {
          map.put("{}", Lists.newArrayList("DataVersion", "author", "size", "data", "entities", "palette", "palettes"));
          map.put("{}.data.[].{}", Lists.newArrayList("pos", "state", "nbt"));
-@@ -33,16 +35,22 @@ public class SnbtPrinterTagVisitor implements TagVisitor {
+@@ -33,16 +41,30 @@ public class SnbtPrinterTagVisitor implements TagVisitor {
      private final String indentation;
      private final int depth;
      private final List<String> path;
@@ -27,11 +95,19 @@ index 65a7bbb63112bc2b2dd49353f871846d07682541..613fc3053005e916b2d7d1fb67d1b385
  
      public SnbtPrinterTagVisitor() {
 -        this("    ", 0, Lists.newArrayList());
-+        this("    ", 0, Lists.newArrayList(), new ElementBudget());
++        this("    ", 0, Lists.newArrayList(), ElementBudget.unbounded());
      }
  
      public SnbtPrinterTagVisitor(final String indentation, final int depth, final List<String> path) {
-+        this(indentation, depth, path, new ElementBudget());
++        this(indentation, depth, path, ElementBudget.unbounded());
++    }
++
++    public static SnbtPrinterTagVisitor bounded() {
++        return bounded("    ", 0, Lists.newArrayList());
++    }
++
++    public static SnbtPrinterTagVisitor bounded(final String indentation, final int depth, final List<String> path) {
++        return new SnbtPrinterTagVisitor(indentation, depth, path, ElementBudget.bounded());
 +    }
 +
 +    private SnbtPrinterTagVisitor(final String indentation, final int depth, final List<String> path, final ElementBudget elementBudget) {
@@ -42,7 +118,7 @@ index 65a7bbb63112bc2b2dd49353f871846d07682541..613fc3053005e916b2d7d1fb67d1b385
      }
  
      public String visit(final Tag tag) {
-@@ -90,9 +98,10 @@ public class SnbtPrinterTagVisitor implements TagVisitor {
+@@ -90,9 +112,10 @@ public class SnbtPrinterTagVisitor implements TagVisitor {
          StringBuilder builder = new StringBuilder("[").append("B").append(";");
          byte[] data = tag.getAsByteArray();
  
@@ -55,7 +131,7 @@ index 65a7bbb63112bc2b2dd49353f871846d07682541..613fc3053005e916b2d7d1fb67d1b385
                  builder.append(ELEMENT_SEPARATOR);
              }
          }
-@@ -106,9 +115,10 @@ public class SnbtPrinterTagVisitor implements TagVisitor {
+@@ -106,9 +129,10 @@ public class SnbtPrinterTagVisitor implements TagVisitor {
          StringBuilder builder = new StringBuilder("[").append("I").append(";");
          int[] data = tag.getAsIntArray();
  
@@ -68,7 +144,7 @@ index 65a7bbb63112bc2b2dd49353f871846d07682541..613fc3053005e916b2d7d1fb67d1b385
                  builder.append(ELEMENT_SEPARATOR);
              }
          }
-@@ -123,9 +133,10 @@ public class SnbtPrinterTagVisitor implements TagVisitor {
+@@ -123,9 +147,10 @@ public class SnbtPrinterTagVisitor implements TagVisitor {
          StringBuilder builder = new StringBuilder("[").append("L").append(";");
          long[] data = tag.getAsLongArray();
  
@@ -81,16 +157,19 @@ index 65a7bbb63112bc2b2dd49353f871846d07682541..613fc3053005e916b2d7d1fb67d1b385
                  builder.append(ELEMENT_SEPARATOR);
              }
          }
-@@ -136,7 +147,7 @@ public class SnbtPrinterTagVisitor implements TagVisitor {
+@@ -136,7 +161,10 @@ public class SnbtPrinterTagVisitor implements TagVisitor {
  
      @Override
      public void visitList(final ListTag tag) {
 -        if (tag.isEmpty()) {
-+        if (tag.isEmpty() || this.depth >= MAX_DEPTH || !this.elementBudget.hasRemaining()) {
++        if (tag.isEmpty() || this.depth >= this.elementBudget.maxDepth() - 1 || !this.elementBudget.hasRemaining()) {
++            if (!tag.isEmpty()) {
++                this.elementBudget.logTruncation();
++            }
              this.result = "[]";
          } else {
              StringBuilder builder = new StringBuilder("[");
-@@ -146,10 +157,12 @@ public class SnbtPrinterTagVisitor implements TagVisitor {
+@@ -146,10 +174,12 @@ public class SnbtPrinterTagVisitor implements TagVisitor {
                  builder.append("\n");
              }
  
@@ -106,16 +185,19 @@ index 65a7bbb63112bc2b2dd49353f871846d07682541..613fc3053005e916b2d7d1fb67d1b385
                      builder.append(ELEMENT_SEPARATOR).append(indentation.isEmpty() ? " " : "\n");
                  }
              }
-@@ -166,7 +179,7 @@ public class SnbtPrinterTagVisitor implements TagVisitor {
+@@ -166,7 +196,10 @@ public class SnbtPrinterTagVisitor implements TagVisitor {
  
      @Override
      public void visitCompound(final CompoundTag tag) {
 -        if (tag.isEmpty()) {
-+        if (tag.isEmpty() || this.depth >= MAX_DEPTH || !this.elementBudget.hasRemaining()) {
++        if (tag.isEmpty() || this.depth >= this.elementBudget.maxDepth() - 1 || !this.elementBudget.hasRemaining()) {
++            if (!tag.isEmpty()) {
++                this.elementBudget.logTruncation();
++            }
              this.result = "{}";
          } else {
              StringBuilder builder = new StringBuilder("{");
-@@ -176,10 +189,22 @@ public class SnbtPrinterTagVisitor implements TagVisitor {
+@@ -176,10 +209,23 @@ public class SnbtPrinterTagVisitor implements TagVisitor {
                  builder.append("\n");
              }
  
@@ -124,6 +206,7 @@ index 65a7bbb63112bc2b2dd49353f871846d07682541..613fc3053005e916b2d7d1fb67d1b385
 +            if (tag.size() <= this.elementBudget.remaining()) {
 +                keys = this.getKeys(tag);
 +            } else {
++                this.elementBudget.logTruncation();
 +                List<String> limitedKeys = Lists.newArrayListWithCapacity(this.elementBudget.remaining());
 +                for (String key : tag.keySet()) {
 +                    if (limitedKeys.size() >= this.elementBudget.remaining()) {
@@ -140,7 +223,7 @@ index 65a7bbb63112bc2b2dd49353f871846d07682541..613fc3053005e916b2d7d1fb67d1b385
                  String key = iterator.next();
                  Tag value = tag.get(key);
                  this.pushPath(key);
-@@ -187,9 +212,9 @@ public class SnbtPrinterTagVisitor implements TagVisitor {
+@@ -187,9 +233,9 @@ public class SnbtPrinterTagVisitor implements TagVisitor {
                      .append(handleEscapePretty(key))
                      .append(NAME_VALUE_SEPARATOR)
                      .append(" ")
@@ -152,17 +235,32 @@ index 65a7bbb63112bc2b2dd49353f871846d07682541..613fc3053005e916b2d7d1fb67d1b385
                      builder.append(ELEMENT_SEPARATOR).append(indentation.isEmpty() ? " " : "\n");
                  }
              }
-@@ -245,4 +270,26 @@ public class SnbtPrinterTagVisitor implements TagVisitor {
+@@ -245,4 +291,56 @@ public class SnbtPrinterTagVisitor implements TagVisitor {
      @Override
      public void visitEnd(final EndTag tag) {
      }
 +
 +    // Scissors start - share one breadth budget across recursively-created pretty printers
 +    private static final class ElementBudget {
-+        private int remaining = MAX_VISITED_ELEMENTS;
++        private final int maxDepth;
++        private int remaining;
++
++        private ElementBudget(final int maxDepth, final int remaining) {
++            this.maxDepth = maxDepth;
++            this.remaining = remaining;
++        }
++
++        private static ElementBudget bounded() {
++            return new ElementBudget(MAX_DEPTH, MAX_VISITED_ELEMENTS);
++        }
++
++        private static ElementBudget unbounded() {
++            return new ElementBudget(Integer.MAX_VALUE, Integer.MAX_VALUE);
++        }
 +
 +        private boolean consume() {
 +            if (this.remaining <= 0) {
++                this.logTruncation();
 +                return false;
 +            }
 +            this.remaining--;
@@ -176,27 +274,73 @@ index 65a7bbb63112bc2b2dd49353f871846d07682541..613fc3053005e916b2d7d1fb67d1b385
 +        private int remaining() {
 +            return this.remaining;
 +        }
++
++        private int maxDepth() {
++            return this.maxDepth;
++        }
++
++        private void logTruncation() {
++            if (this.maxDepth == Integer.MAX_VALUE) {
++                return;
++            }
++            long now = System.nanoTime();
++            long nextWarning = NEXT_TRUNCATION_WARNING_NANOS.get();
++            if (now >= nextWarning && NEXT_TRUNCATION_WARNING_NANOS.compareAndSet(nextWarning, now + TimeUnit.SECONDS.toNanos(10))) {
++                LOGGER.warn("Truncated bounded pretty SNBT rendering after {} elements or {} levels", MAX_VISITED_ELEMENTS, MAX_DEPTH);
++            }
++        }
 +    }
 +    // Scissors end - share one breadth budget across recursively-created pretty printers
  }
 diff --git a/net/minecraft/nbt/StringTagVisitor.java b/net/minecraft/nbt/StringTagVisitor.java
-index 734ae0633aa5971e7df449248cd6c2e511767e53..96311f43e9483978bba342e1e7111b763b8fe5fb 100644
+index 734ae0633aa5971e7df449248cd6c2e511767e53..8c92b9791f17422411d02fe1195f05537d893b66 100644
 --- a/net/minecraft/nbt/StringTagVisitor.java
 +++ b/net/minecraft/nbt/StringTagVisitor.java
-@@ -6,8 +6,12 @@ import java.util.Map.Entry;
+@@ -1,13 +1,43 @@
+ package net.minecraft.nbt;
+ 
++import com.mojang.logging.LogUtils;
+ import java.util.ArrayList;
+ import java.util.List;
+ import java.util.Map.Entry;
++import java.util.concurrent.TimeUnit;
++import java.util.concurrent.atomic.AtomicLong;
  import java.util.regex.Pattern;
++import org.slf4j.Logger;
  
  public class StringTagVisitor implements TagVisitor {
 +    private static final int MAX_DEPTH = 64;
 +    private static final int MAX_VISITED_ELEMENTS = 1024;
++    private static final Logger LOGGER = LogUtils.getLogger();
++    private static final AtomicLong NEXT_TRUNCATION_WARNING_NANOS = new AtomicLong();
      private static final Pattern UNQUOTED_KEY_MATCH = Pattern.compile("[A-Za-z._]+[A-Za-z0-9._+-]*");
      private final StringBuilder builder = new StringBuilder();
-+    private int remainingElements = MAX_VISITED_ELEMENTS;
++    private final int maxDepth;
++    private int remainingElements;
 +    private int depth;
++
++    public StringTagVisitor() {
++        this(Integer.MAX_VALUE, Integer.MAX_VALUE);
++    }
++
++    private StringTagVisitor(final int maxDepth, final int maxVisitedElements) {
++        this.maxDepth = maxDepth;
++        this.remainingElements = maxVisitedElements;
++    }
++
++    public static StringTagVisitor bounded() {
++        return new StringTagVisitor(MAX_DEPTH, MAX_VISITED_ELEMENTS);
++    }
++
++    public static String bounded(final Tag tag) {
++        StringTagVisitor visitor = bounded();
++        tag.accept(visitor);
++        return visitor.build();
++    }
  
      public String build() {
          return this.builder.toString();
-@@ -53,7 +57,7 @@ public class StringTagVisitor implements TagVisitor {
+@@ -53,7 +83,7 @@ public class StringTagVisitor implements TagVisitor {
          this.builder.append("[B;");
          byte[] data = tag.getAsByteArray();
  
@@ -205,7 +349,7 @@ index 734ae0633aa5971e7df449248cd6c2e511767e53..96311f43e9483978bba342e1e7111b76
              if (i != 0) {
                  this.builder.append(',');
              }
-@@ -69,7 +73,7 @@ public class StringTagVisitor implements TagVisitor {
+@@ -69,7 +99,7 @@ public class StringTagVisitor implements TagVisitor {
          this.builder.append("[I;");
          int[] data = tag.getAsIntArray();
  
@@ -214,7 +358,7 @@ index 734ae0633aa5971e7df449248cd6c2e511767e53..96311f43e9483978bba342e1e7111b76
              if (i != 0) {
                  this.builder.append(',');
              }
-@@ -85,7 +89,7 @@ public class StringTagVisitor implements TagVisitor {
+@@ -85,7 +115,7 @@ public class StringTagVisitor implements TagVisitor {
          this.builder.append("[L;");
          long[] data = tag.getAsLongArray();
  
@@ -223,11 +367,12 @@ index 734ae0633aa5971e7df449248cd6c2e511767e53..96311f43e9483978bba342e1e7111b76
              if (i != 0) {
                  this.builder.append(',');
              }
-@@ -99,13 +103,23 @@ public class StringTagVisitor implements TagVisitor {
+@@ -99,13 +129,24 @@ public class StringTagVisitor implements TagVisitor {
      @Override
      public void visitList(final ListTag tag) {
          this.builder.append('[');
-+        if (this.depth >= MAX_DEPTH) {
++        if (this.depth >= this.maxDepth - 1) {
++            this.logTruncation();
 +            this.builder.append(']');
 +            return;
 +        }
@@ -250,13 +395,14 @@ index 734ae0633aa5971e7df449248cd6c2e511767e53..96311f43e9483978bba342e1e7111b76
          }
  
          this.builder.append(']');
-@@ -114,18 +128,39 @@ public class StringTagVisitor implements TagVisitor {
+@@ -114,18 +155,41 @@ public class StringTagVisitor implements TagVisitor {
      @Override
      public void visitCompound(final CompoundTag tag) {
          this.builder.append('{');
 -        List<Entry<String, Tag>> entries = new ArrayList<>(tag.entrySet());
 -        entries.sort(Entry.comparingByKey());
-+        if (this.depth >= MAX_DEPTH) {
++        if (this.depth >= this.maxDepth - 1) {
++            this.logTruncation();
 +            this.builder.append('}');
 +            return;
 +        }
@@ -267,6 +413,7 @@ index 734ae0633aa5971e7df449248cd6c2e511767e53..96311f43e9483978bba342e1e7111b76
 +            entries.addAll(tag.entrySet());
 +            entries.sort(Entry.comparingByKey());
 +        } else {
++            this.logTruncation();
 +            for (Entry<String, Tag> entry : tag.entrySet()) {
 +                if (entries.size() >= this.remainingElements) {
 +                    break;
@@ -295,37 +442,59 @@ index 734ae0633aa5971e7df449248cd6c2e511767e53..96311f43e9483978bba342e1e7111b76
          }
  
          this.builder.append('}');
-@@ -139,6 +174,15 @@ public class StringTagVisitor implements TagVisitor {
+@@ -139,6 +203,27 @@ public class StringTagVisitor implements TagVisitor {
          }
      }
  
 +    // Scissors - use one budget for the complete rendering tree rather than a per-container limit
 +    private boolean consumeElement() {
 +        if (this.remainingElements <= 0) {
++            this.logTruncation();
 +            return false;
 +        }
 +        this.remainingElements--;
 +        return true;
 +    }
 +
++    private void logTruncation() {
++        if (this.maxDepth == Integer.MAX_VALUE) {
++            return;
++        }
++        long now = System.nanoTime();
++        long nextWarning = NEXT_TRUNCATION_WARNING_NANOS.get();
++        if (now >= nextWarning && NEXT_TRUNCATION_WARNING_NANOS.compareAndSet(nextWarning, now + TimeUnit.SECONDS.toNanos(10))) {
++            LOGGER.warn("Truncated bounded SNBT rendering after {} elements or {} levels", MAX_VISITED_ELEMENTS, MAX_DEPTH);
++        }
++    }
++
      @Override
      public void visitEnd(final EndTag tag) {
          this.builder.append("END");
 diff --git a/net/minecraft/nbt/TextComponentTagVisitor.java b/net/minecraft/nbt/TextComponentTagVisitor.java
-index 6273c3b9563d4ac6d1e856f06058ec599ebcc60d..79aba92c4a8fc7c6131004a28c4741ceefab3e4d 100644
+index 6273c3b9563d4ac6d1e856f06058ec599ebcc60d..1986114c5f0d1855e39fd933fd974c67512e365c 100644
 --- a/net/minecraft/nbt/TextComponentTagVisitor.java
 +++ b/net/minecraft/nbt/TextComponentTagVisitor.java
-@@ -20,7 +20,8 @@ public class TextComponentTagVisitor implements TagVisitor {
+@@ -9,6 +9,8 @@ import java.util.Iterator;
+ import java.util.List;
+ import java.util.Map;
+ import java.util.Objects;
++import java.util.concurrent.TimeUnit;
++import java.util.concurrent.atomic.AtomicLong;
+ import java.util.regex.Pattern;
+ import net.minecraft.ChatFormatting;
+ import net.minecraft.network.chat.Component;
+@@ -20,7 +22,9 @@ public class TextComponentTagVisitor implements TagVisitor {
      private static final Logger LOGGER = LogUtils.getLogger();
      private static final int INLINE_LIST_THRESHOLD = 8;
      private static final int MAX_DEPTH = 64;
 -    private static final int MAX_LENGTH = 128;
 +    private static final int MAX_CONTAINER_ELEMENTS = 128;
 +    private static final int MAX_VISITED_ELEMENTS = 1024;
++    private static final AtomicLong NEXT_TRUNCATION_WARNING_NANOS = new AtomicLong();
      private static final Pattern SIMPLE_VALUE = Pattern.compile("[A-Za-z0-9._+-]+");
      private static final Component NEWLINE = Component.literal("\n");
      private static final Component ELEMENT_SPACING = Component.literal(" ");
-@@ -29,6 +30,7 @@ public class TextComponentTagVisitor implements TagVisitor {
+@@ -29,6 +33,7 @@ public class TextComponentTagVisitor implements TagVisitor {
      private final boolean sortKeys;
      private int indentDepth;
      private int depth;
@@ -333,7 +502,7 @@ index 6273c3b9563d4ac6d1e856f06058ec599ebcc60d..79aba92c4a8fc7c6131004a28c4741ce
      private final MutableComponent result = Component.empty();
  
      public TextComponentTagVisitor(final String indentation) {
-@@ -109,14 +111,16 @@ public class TextComponentTagVisitor implements TagVisitor {
+@@ -109,15 +114,17 @@ public class TextComponentTagVisitor implements TagVisitor {
              .append(TextComponentTagVisitor.Token.LIST_TYPE_SEPARATOR);
          byte[] data = tag.getAsByteArray();
  
@@ -349,11 +518,13 @@ index 6273c3b9563d4ac6d1e856f06058ec599ebcc60d..79aba92c4a8fc7c6131004a28c4741ce
          }
  
 -        if (data.length > 128) {
+-            this.append(TextComponentTagVisitor.Token.FOLDED);
 +        if (rendered < data.length) {
-             this.append(TextComponentTagVisitor.Token.FOLDED);
++            this.appendFolded();
          }
  
-@@ -130,14 +134,16 @@ public class TextComponentTagVisitor implements TagVisitor {
+         this.append(TextComponentTagVisitor.Token.LIST_CLOSE);
+@@ -130,15 +137,17 @@ public class TextComponentTagVisitor implements TagVisitor {
              .append(TextComponentTagVisitor.Token.LIST_TYPE_SEPARATOR);
          int[] data = tag.getAsIntArray();
  
@@ -369,11 +540,13 @@ index 6273c3b9563d4ac6d1e856f06058ec599ebcc60d..79aba92c4a8fc7c6131004a28c4741ce
          }
  
 -        if (data.length > 128) {
+-            this.append(TextComponentTagVisitor.Token.FOLDED);
 +        if (rendered < data.length) {
-             this.append(TextComponentTagVisitor.Token.FOLDED);
++            this.appendFolded();
          }
  
-@@ -151,14 +157,16 @@ public class TextComponentTagVisitor implements TagVisitor {
+         this.append(TextComponentTagVisitor.Token.LIST_CLOSE);
+@@ -151,15 +160,17 @@ public class TextComponentTagVisitor implements TagVisitor {
              .append(TextComponentTagVisitor.Token.LIST_TYPE_SEPARATOR);
          long[] data = tag.getAsLongArray();
  
@@ -389,11 +562,22 @@ index 6273c3b9563d4ac6d1e856f06058ec599ebcc60d..79aba92c4a8fc7c6131004a28c4741ce
          }
  
 -        if (data.length > 128) {
+-            this.append(TextComponentTagVisitor.Token.FOLDED);
 +        if (rendered < data.length) {
-             this.append(TextComponentTagVisitor.Token.FOLDED);
++            this.appendFolded();
          }
  
-@@ -188,14 +196,22 @@ public class TextComponentTagVisitor implements TagVisitor {
+         this.append(TextComponentTagVisitor.Token.LIST_CLOSE);
+@@ -183,19 +194,29 @@ public class TextComponentTagVisitor implements TagVisitor {
+     public void visitList(final ListTag tag) {
+         if (tag.isEmpty()) {
+             this.append(TextComponentTagVisitor.Token.LIST_OPEN).append(TextComponentTagVisitor.Token.LIST_CLOSE);
+-        } else if (this.depth >= 64) {
+-            this.append(TextComponentTagVisitor.Token.LIST_OPEN).append(TextComponentTagVisitor.Token.FOLDED).append(TextComponentTagVisitor.Token.LIST_CLOSE);
++        } else if (this.depth >= MAX_DEPTH - 1) {
++            this.append(TextComponentTagVisitor.Token.LIST_OPEN);
++            this.appendFolded();
++            this.append(TextComponentTagVisitor.Token.LIST_CLOSE);
          } else if (!shouldWrapListElements(tag)) {
              this.append(TextComponentTagVisitor.Token.LIST_OPEN);
  
@@ -412,13 +596,13 @@ index 6273c3b9563d4ac6d1e856f06058ec599ebcc60d..79aba92c4a8fc7c6131004a28c4741ce
 +                if (rendered != 0) {
 +                    this.append(TextComponentTagVisitor.Token.ELEMENT_SEPARATOR).append(ELEMENT_SPACING);
 +                }
-+                this.append(TextComponentTagVisitor.Token.FOLDED);
++                this.appendFolded();
 +            }
 +
              this.append(TextComponentTagVisitor.Token.LIST_CLOSE);
          } else {
              this.append(TextComponentTagVisitor.Token.LIST_OPEN);
-@@ -206,15 +222,20 @@ public class TextComponentTagVisitor implements TagVisitor {
+@@ -206,16 +227,22 @@ public class TextComponentTagVisitor implements TagVisitor {
              Component entryIndent = Component.literal(this.indentation.repeat(this.indentDepth + 1));
              Component elementSpacing = this.indentation.isEmpty() ? ELEMENT_SPACING : NEWLINE;
  
@@ -435,15 +619,28 @@ index 6273c3b9563d4ac6d1e856f06058ec599ebcc60d..79aba92c4a8fc7c6131004a28c4741ce
              }
  
 -            if (tag.size() > 128) {
+-                this.append(entryIndent).append(TextComponentTagVisitor.Token.FOLDED);
 +            if (rendered < tag.size()) {
 +                if (rendered != 0) {
 +                    this.append(TextComponentTagVisitor.Token.ELEMENT_SEPARATOR).append(elementSpacing);
 +                }
-                 this.append(entryIndent).append(TextComponentTagVisitor.Token.FOLDED);
++                this.append(entryIndent);
++                this.appendFolded();
              }
  
-@@ -236,13 +257,21 @@ public class TextComponentTagVisitor implements TagVisitor {
-                 .append(TextComponentTagVisitor.Token.STRUCT_CLOSE);
+             if (!this.indentation.isEmpty()) {
+@@ -230,19 +257,27 @@ public class TextComponentTagVisitor implements TagVisitor {
+     public void visitCompound(final CompoundTag tag) {
+         if (tag.isEmpty()) {
+             this.append(TextComponentTagVisitor.Token.STRUCT_OPEN).append(TextComponentTagVisitor.Token.STRUCT_CLOSE);
+-        } else if (this.depth >= 64) {
+-            this.append(TextComponentTagVisitor.Token.STRUCT_OPEN)
+-                .append(TextComponentTagVisitor.Token.FOLDED)
+-                .append(TextComponentTagVisitor.Token.STRUCT_CLOSE);
++        } else if (this.depth >= MAX_DEPTH - 1) {
++            this.append(TextComponentTagVisitor.Token.STRUCT_OPEN);
++            this.appendFolded();
++            this.append(TextComponentTagVisitor.Token.STRUCT_CLOSE);
          } else {
              this.append(TextComponentTagVisitor.Token.STRUCT_OPEN);
 +            int keyLimit = Math.min(MAX_CONTAINER_ELEMENTS, this.remainingElements);
@@ -466,7 +663,7 @@ index 6273c3b9563d4ac6d1e856f06058ec599ebcc60d..79aba92c4a8fc7c6131004a28c4741ce
              }
  
              if (!this.indentation.isEmpty()) {
-@@ -253,18 +282,27 @@ public class TextComponentTagVisitor implements TagVisitor {
+@@ -253,18 +288,28 @@ public class TextComponentTagVisitor implements TagVisitor {
              Component elementSpacing = this.indentation.isEmpty() ? ELEMENT_SPACING : NEWLINE;
              Iterator<String> iterator = keys.iterator();
  
@@ -490,25 +687,131 @@ index 6273c3b9563d4ac6d1e856f06058ec599ebcc60d..79aba92c4a8fc7c6131004a28c4741ce
 +                if (rendered != 0) {
 +                    this.append(TextComponentTagVisitor.Token.ELEMENT_SEPARATOR).append(elementSpacing);
 +                }
-+                this.append(entryIndent).append(TextComponentTagVisitor.Token.FOLDED);
++                this.append(entryIndent);
++                this.appendFolded();
 +            }
 +
              if (!this.indentation.isEmpty()) {
                  this.append(NEWLINE).append(Component.literal(this.indentation.repeat(this.indentDepth)));
              }
-@@ -291,6 +329,15 @@ public class TextComponentTagVisitor implements TagVisitor {
+@@ -291,6 +336,34 @@ public class TextComponentTagVisitor implements TagVisitor {
          }
      }
  
 +    // Scissors - cap the complete rendered tree in addition to each individual container
 +    private boolean consumeElement() {
 +        if (this.remainingElements <= 0) {
++            this.logTruncation();
 +            return false;
 +        }
 +        this.remainingElements--;
 +        return true;
 +    }
 +
++    private void appendFolded() {
++        this.logTruncation();
++        this.append(TextComponentTagVisitor.Token.FOLDED);
++    }
++
++    private void logTruncation() {
++        long now = System.nanoTime();
++        long nextWarning = NEXT_TRUNCATION_WARNING_NANOS.get();
++        if (now >= nextWarning && NEXT_TRUNCATION_WARNING_NANOS.compareAndSet(nextWarning, now + TimeUnit.SECONDS.toNanos(10))) {
++            LOGGER.warn(
++                "Truncated NBT text rendering after {} total elements, {} elements in one container, or {} levels",
++                MAX_VISITED_ELEMENTS,
++                MAX_CONTAINER_ELEMENTS,
++                MAX_DEPTH
++            );
++        }
++    }
++
      private Component handleEscapePretty(final String input) {
          if (SIMPLE_VALUE.matcher(input).matches()) {
              return Component.literal(input).withStyle(this.styling.keyStyle());
+diff --git a/net/minecraft/network/FriendlyByteBuf.java b/net/minecraft/network/FriendlyByteBuf.java
+index 12cd230ebe97dab655f8546948f06b93f0babf1f..e459037587d6bfe756fc495d2e016d06355927f1 100644
+--- a/net/minecraft/network/FriendlyByteBuf.java
++++ b/net/minecraft/network/FriendlyByteBuf.java
+@@ -95,7 +95,7 @@ public class FriendlyByteBuf extends ByteBuf {
+     @Deprecated
+     public <T> T readWithCodec(final DynamicOps<Tag> ops, final Codec<T> codec, final NbtAccounter accounter) {
+         Tag tag = this.readNbt(accounter);
+-        return codec.parse(ops, tag).getOrThrow(msg -> new DecoderException("Failed to decode: " + msg + " " + tag));
++        return codec.parse(ops, tag).getOrThrow(msg -> new DecoderException("Failed to decode: " + msg + " " + net.minecraft.nbt.StringTagVisitor.bounded(tag))); // Scissors - bound diagnostic SNBT
+     }
+ 
+     @Deprecated
+diff --git a/net/minecraft/network/chat/ComponentSerialization.java b/net/minecraft/network/chat/ComponentSerialization.java
+index e6e17f6568cd219c24d84a04cfd61aaa0dc8af79..f6645fad72b5cb9863d2af15fd3c5950a7d8f6ae 100644
+--- a/net/minecraft/network/chat/ComponentSerialization.java
++++ b/net/minecraft/network/chat/ComponentSerialization.java
+@@ -50,7 +50,7 @@ public class ComponentSerialization {
+             public Component decode(RegistryFriendlyByteBuf registryFriendlyByteBuf) {
+                 net.minecraft.nbt.Tag tag = this.streamCodec.decode(registryFriendlyByteBuf);
+                 RegistryOps<net.minecraft.nbt.Tag> registryOps = registryFriendlyByteBuf.registryAccess().createSerializationContext(net.minecraft.nbt.NbtOps.INSTANCE);
+-                return CODEC.parse(registryOps, tag).getOrThrow(error -> new io.netty.handler.codec.DecoderException("Failed to decode: " + error + " " + tag));
++                return CODEC.parse(registryOps, tag).getOrThrow(error -> new io.netty.handler.codec.DecoderException("Failed to decode: " + error + " " + net.minecraft.nbt.StringTagVisitor.bounded(tag))); // Scissors - bound diagnostic SNBT
+             }
+ 
+             @Override
+diff --git a/net/minecraft/network/chat/contents/NbtContents.java b/net/minecraft/network/chat/contents/NbtContents.java
+index 69c414b6d24300a96ee43fcb8e1fdebfd374e780..178fd9e651a26f2f189bd07d28c4513295109ab9 100644
+--- a/net/minecraft/network/chat/contents/NbtContents.java
++++ b/net/minecraft/network/chat/contents/NbtContents.java
+@@ -79,7 +79,7 @@ public record NbtContents(
+                         Component component = ComponentSerialization.CODEC.parse(registryOps, tag).getOrThrow();
+                         return Stream.of(ComponentUtils.resolve(context, component, recursionDepth));
+                     } catch (Exception e) {
+-                        LOGGER.warn("Failed to parse component: {}", tag, e);
++                        LOGGER.warn("Failed to parse component: {}", net.minecraft.nbt.StringTagVisitor.bounded(tag), e); // Scissors - bound diagnostic SNBT
+                         return Stream.of();
+                     }
+                 }).reduce((left, right) -> left.append(resolvedSeparator).append(right)).orElseGet(Component::empty);
+diff --git a/net/minecraft/network/codec/ByteBufCodecs.java b/net/minecraft/network/codec/ByteBufCodecs.java
+index 0620bbf1fd5f06c726b0f4c75a46070f577f4743..ce9fbbf055e34d9c41ee92d2898be46455f701b2 100644
+--- a/net/minecraft/network/codec/ByteBufCodecs.java
++++ b/net/minecraft/network/codec/ByteBufCodecs.java
+@@ -364,7 +364,7 @@ public interface ByteBufCodecs {
+             if (tag instanceof CompoundTag compoundTag) {
+                 return compoundTag;
+             } else {
+-                throw new DecoderException("Not a compound tag: " + tag);
++                throw new DecoderException("Not a compound tag: " + net.minecraft.nbt.StringTagVisitor.bounded(tag)); // Scissors - bound diagnostic SNBT
+             }
+         }, compoundTag -> (Tag)compoundTag);
+     }
+@@ -412,7 +412,7 @@ public interface ByteBufCodecs {
+             public T decode(final RegistryFriendlyByteBuf input) {
+                 Tag tag = tagCodec.decode(input);
+                 RegistryOps<Tag> ops = input.registryAccess().createSerializationContext(NbtOps.INSTANCE);
+-                return codec.parse(ops, tag).getOrThrow(msg -> new DecoderException("Failed to decode: " + msg + " " + tag));
++                return codec.parse(ops, tag).getOrThrow(msg -> new DecoderException("Failed to decode: " + msg + " " + net.minecraft.nbt.StringTagVisitor.bounded(tag))); // Scissors - bound diagnostic SNBT
+             }
+ 
+             @Override
+diff --git a/net/minecraft/world/entity/EntityType.java b/net/minecraft/world/entity/EntityType.java
+index a23e4b5e1ddc78d3fec6ab84bbac0a15dc485350..6b943611f1a5b8df7ddbefea6fdf579c5bbdba9f 100644
+--- a/net/minecraft/world/entity/EntityType.java
++++ b/net/minecraft/world/entity/EntityType.java
+@@ -399,7 +399,7 @@ public class EntityType<T extends Entity> implements EntityTypeTest<Entity, T>,
+             () -> {
+                 LOGGER.warn("Skipping Entity with id {}", input.getStringOr("id", "[invalid]"));
+                 if ((DEBUG_ENTITIES_WITH_INVALID_IDS || level.getCraftServer().getServer().isDebugging()) && input instanceof TagValueInput tagInput) {
+-                    LOGGER.warn("Skipped entity tag: {}", tagInput.input);
++                    LOGGER.warn("Skipped entity tag: {}", net.minecraft.nbt.StringTagVisitor.bounded(tagInput.input)); // Scissors - bound diagnostic SNBT
+                 }
+             }
+             // Paper end - Add logging for debugging entity tags with invalid ids
+diff --git a/net/minecraft/world/item/component/CustomData.java b/net/minecraft/world/item/component/CustomData.java
+index 587e4bcd87a5d995037728772bd5b6c990b4c4a1..43b1a9d0bc72c9e891e162e920a62f8ca35a8e7d 100644
+--- a/net/minecraft/world/item/component/CustomData.java
++++ b/net/minecraft/world/item/component/CustomData.java
+@@ -95,6 +95,6 @@ public final class CustomData {
+ 
+     @Override
+     public String toString() {
+-        return this.tag.toString();
++        return net.minecraft.nbt.StringTagVisitor.bounded(this.tag); // Scissors - bound diagnostic SNBT
+     }
+ }

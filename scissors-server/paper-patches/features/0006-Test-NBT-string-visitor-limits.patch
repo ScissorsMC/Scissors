@@ -6,12 +6,14 @@ Subject: [PATCH] Test NBT string visitor limits
 
 diff --git a/src/test/java/io/papermc/paper/scissors/TagVisitorLimitTest.java b/src/test/java/io/papermc/paper/scissors/TagVisitorLimitTest.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..eb45fb3ebc9bdfc786b300feac9ccaee39406960
+index 0000000000000000000000000000000000000000..64038081149290b13e89877ea8b91f54af6d962b
 --- /dev/null
 +++ b/src/test/java/io/papermc/paper/scissors/TagVisitorLimitTest.java
-@@ -0,0 +1,57 @@
+@@ -0,0 +1,145 @@
 +package io.papermc.paper.scissors;
 +
++import net.minecraft.nbt.CompoundTag;
++import net.minecraft.nbt.IntArrayTag;
 +import net.minecraft.nbt.IntTag;
 +import net.minecraft.nbt.ListTag;
 +import net.minecraft.nbt.NbtOps;
@@ -20,6 +22,7 @@ index 0000000000000000000000000000000000000000..eb45fb3ebc9bdfc786b300feac9ccaee
 +import net.minecraft.nbt.Tag;
 +import net.minecraft.nbt.TagParser;
 +import net.minecraft.nbt.TextComponentTagVisitor;
++import org.bukkit.craftbukkit.util.CraftNBTTagConfigSerializer;
 +import org.bukkit.support.environment.Normal;
 +import org.junit.jupiter.api.Test;
 +
@@ -34,17 +37,14 @@ index 0000000000000000000000000000000000000000..eb45fb3ebc9bdfc786b300feac9ccaee
 +    @Test
 +    void stringVisitorProducesBoundedValidSnbt() throws Exception {
 +        final ListTag input = largeList();
-+        final StringTagVisitor visitor = new StringTagVisitor();
-+        input.accept(visitor);
-+
-+        final Tag parsed = TagParser.create(NbtOps.INSTANCE).parseFully(visitor.build());
++        final Tag parsed = TagParser.create(NbtOps.INSTANCE).parseFully(StringTagVisitor.bounded(input));
 +
 +        assertEquals(1024, assertInstanceOf(ListTag.class, parsed).size());
 +    }
 +
 +    @Test
 +    void prettyVisitorProducesBoundedValidSnbt() throws Exception {
-+        final String rendered = new SnbtPrinterTagVisitor().visit(largeList());
++        final String rendered = SnbtPrinterTagVisitor.bounded().visit(largeList());
 +
 +        final Tag parsed = TagParser.create(NbtOps.INSTANCE).parseFully(rendered);
 +
@@ -59,11 +59,99 @@ index 0000000000000000000000000000000000000000..eb45fb3ebc9bdfc786b300feac9ccaee
 +        assertTrue(rendered.length() < 2048);
 +    }
 +
++    @Test
++    void defaultStringVisitorsRemainLossless() throws Exception {
++        final ListTag input = largeList();
++        final StringTagVisitor stringVisitor = new StringTagVisitor();
++        input.accept(stringVisitor);
++
++        assertEquals(input, TagParser.create(NbtOps.INSTANCE).parseFully(stringVisitor.build()));
++        assertEquals(input, TagParser.create(NbtOps.INSTANCE).parseFully(new SnbtPrinterTagVisitor().visit(input)));
++    }
++
++    @Test
++    void persistentDataSerializationRemainsLossless() {
++        final CompoundTag input = new CompoundTag();
++        input.put("values", largeList());
++
++        assertEquals(input, CraftNBTTagConfigSerializer.deserialize(CraftNBTTagConfigSerializer.serialize(input)));
++    }
++
++    @Test
++    void boundedVisitorsLimitPrimitiveArrays() throws Exception {
++        final IntArrayTag input = new IntArrayTag(new int[2048]);
++        final StringTagVisitor stringVisitor = StringTagVisitor.bounded();
++        input.accept(stringVisitor);
++
++        assertEquals(
++            1024,
++            assertInstanceOf(IntArrayTag.class, TagParser.create(NbtOps.INSTANCE).parseFully(stringVisitor.build())).getAsIntArray().length
++        );
++        assertEquals(
++            1024,
++            assertInstanceOf(
++                IntArrayTag.class,
++                TagParser.create(NbtOps.INSTANCE).parseFully(SnbtPrinterTagVisitor.bounded().visit(input))
++            ).getAsIntArray().length
++        );
++    }
++
++    @Test
++    void nestedVisitorsShareOneElementBudget() throws Exception {
++        final ListTag outer = new ListTag();
++        outer.add(listOfSize(700));
++        outer.add(listOfSize(700));
++
++        final ListTag stringResult = assertInstanceOf(
++            ListTag.class, TagParser.create(NbtOps.INSTANCE).parseFully(StringTagVisitor.bounded(outer))
++        );
++        final ListTag prettyResult = assertInstanceOf(
++            ListTag.class, TagParser.create(NbtOps.INSTANCE).parseFully(SnbtPrinterTagVisitor.bounded().visit(outer))
++        );
++
++        assertTrue(totalNestedListElements(stringResult) <= 1024);
++        assertTrue(totalNestedListElements(prettyResult) <= 1024);
++        assertTrue(assertInstanceOf(ListTag.class, stringResult.get(1)).size() < 700);
++        assertTrue(assertInstanceOf(ListTag.class, prettyResult.get(1)).size() < 700);
++    }
++
++    @Test
++    void boundedVisitorsTruncateExcessiveDepthToValidSnbt() {
++        final Tag input = deeplyNestedList(65);
++
++        assertDoesNotThrow(() -> TagParser.create(NbtOps.INSTANCE).parseFully(StringTagVisitor.bounded(input)));
++        assertDoesNotThrow(() -> TagParser.create(NbtOps.INSTANCE).parseFully(SnbtPrinterTagVisitor.bounded().visit(input)));
++    }
++
 +    private static ListTag largeList() {
++        return listOfSize(2048);
++    }
++
++    private static ListTag listOfSize(final int size) {
 +        final ListTag list = new ListTag();
-+        for (int i = 0; i < 2048; i++) {
++        for (int i = 0; i < size; i++) {
 +            list.add(IntTag.valueOf(1));
 +        }
 +        return list;
++    }
++
++    private static int totalNestedListElements(final ListTag list) {
++        int total = list.size();
++        for (Tag child : list) {
++            if (child instanceof ListTag nested) {
++                total += totalNestedListElements(nested);
++            }
++        }
++        return total;
++    }
++
++    private static Tag deeplyNestedList(final int depth) {
++        Tag child = IntTag.valueOf(1);
++        for (int i = 0; i < depth; i++) {
++            final ListTag parent = new ListTag();
++            parent.add(child);
++            child = parent;
++        }
++        return child;
 +    }
 +}

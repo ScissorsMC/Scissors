@@ -3,25 +3,29 @@ From: Telesphoreo <me@telesphoreo.me>
 Date: Wed, 29 Jul 2026 00:59:24 -0400
 Subject: [PATCH] Reject oversized entity selectors
 
-Reject command selector distance and volume bounds beyond 1024 blocks before they can trigger enormous entity queries. Sanitize selectors constructed outside the command parser as defense in depth and log eliminated oversized ranges.
+Reject command selector distance and volume bounds beyond 1024 blocks, along with non-finite x, y, and z coordinates, before they can trigger invalid or enormous queries. Apply the same checks to programmatically constructed selectors and rate-limit rejection logging.
 
 diff --git a/net/minecraft/commands/arguments/selector/EntitySelector.java b/net/minecraft/commands/arguments/selector/EntitySelector.java
-index 6c05b9276bdc267a36376f6c64592a50e4b2b36e..293cfcfa6b0b1803eaece85987a4444c6a059fc9 100644
+index 6c05b9276bdc267a36376f6c64592a50e4b2b36e..300a31d4d6b3b9fbcea0c45f2969dca453d64e2d 100644
 --- a/net/minecraft/commands/arguments/selector/EntitySelector.java
 +++ b/net/minecraft/commands/arguments/selector/EntitySelector.java
-@@ -2,9 +2,11 @@ package net.minecraft.commands.arguments.selector;
+@@ -2,10 +2,15 @@ package net.minecraft.commands.arguments.selector;
  
  import com.mojang.brigadier.StringReader;
  import com.mojang.brigadier.exceptions.CommandSyntaxException;
++import com.mojang.brigadier.exceptions.SimpleCommandExceptionType;
 +import com.mojang.logging.LogUtils;
  import com.mojang.serialization.Codec;
  import it.unimi.dsi.fastutil.objects.ObjectArrayList;
  import java.util.List;
 +import java.util.Optional;
  import java.util.UUID;
++import java.util.concurrent.TimeUnit;
++import java.util.concurrent.atomic.AtomicLong;
  import java.util.function.BiConsumer;
  import java.util.function.Function;
-@@ -26,8 +28,11 @@ import net.minecraft.world.level.entity.EntityTypeTest;
+ import java.util.function.Predicate;
+@@ -26,8 +31,15 @@ import net.minecraft.world.level.entity.EntityTypeTest;
  import net.minecraft.world.phys.AABB;
  import net.minecraft.world.phys.Vec3;
  import org.jspecify.annotations.Nullable;
@@ -29,11 +33,15 @@ index 6c05b9276bdc267a36376f6c64592a50e4b2b36e..293cfcfa6b0b1803eaece85987a4444c
  
  public class EntitySelector {
 +    private static final Logger LOGGER = LogUtils.getLogger();
++    private static final AtomicLong NEXT_INVALID_POSITION_WARNING = new AtomicLong();
 +    public static final double MAX_RANGE = 1024.0;
++    public static final SimpleCommandExceptionType ERROR_NON_FINITE_POSITION = new SimpleCommandExceptionType(
++        Component.literal("Selector coordinates must be finite")
++    );
      public static final int INFINITE = Integer.MAX_VALUE;
      public static final BiConsumer<Vec3, List<? extends Entity>> ORDER_ARBITRARY = (p, c) -> {};
      private static final EntityTypeTest<Entity, ?> ANY_TYPE = new EntityTypeTest<Entity, Entity>() {
-@@ -87,9 +92,14 @@ public class EntitySelector {
+@@ -87,9 +99,14 @@ public class EntitySelector {
          this.includesEntities = includesEntities;
          this.worldLimited = worldLimited;
          this.contextFreePredicates = contextFreePredicates;
@@ -50,7 +58,7 @@ index 6c05b9276bdc267a36376f6c64592a50e4b2b36e..293cfcfa6b0b1803eaece85987a4444c
          this.order = order;
          this.currentEntity = currentEntity;
          this.playerName = playerName;
-@@ -98,6 +108,46 @@ public class EntitySelector {
+@@ -98,6 +115,46 @@ public class EntitySelector {
          this.usesSelector = usesSelector;
      }
  
@@ -97,8 +105,47 @@ index 6c05b9276bdc267a36376f6c64592a50e4b2b36e..293cfcfa6b0b1803eaece85987a4444c
      public int getMaxResults() {
          return this.maxResults;
      }
+@@ -160,7 +217,7 @@ public class EntitySelector {
+ 
+             return List.of();
+         } else {
+-            Vec3 pos = this.position.apply(sender.getPosition());
++            Vec3 pos = this.getPosition(sender);
+             AABB absoluteAabb = this.getAbsoluteAabb(pos);
+             if (this.currentEntity) {
+                 Predicate<Entity> predicate = this.getPredicate(pos, absoluteAabb, null);
+@@ -218,7 +275,7 @@ public class EntitySelector {
+             return result == null ? List.of() : List.of(result);
+         }
+ 
+-        Vec3 pos = this.position.apply(sender.getPosition());
++        Vec3 pos = this.getPosition(sender);
+         AABB absoluteAabb = this.getAbsoluteAabb(pos);
+         Predicate<Entity> predicate = this.getPredicate(pos, absoluteAabb, null);
+         if (this.currentEntity) {
+@@ -249,6 +306,20 @@ public class EntitySelector {
+         return this.aabb != null ? this.aabb.move(pos) : null;
+     }
+ 
++    // Scissors - reject non-finite positions from selectors constructed outside the command parser too
++    private Vec3 getPosition(final CommandSourceStack sender) throws CommandSyntaxException {
++        Vec3 pos = this.position.apply(sender.getPosition());
++        if (!pos.isFinite()) {
++            long now = Util.getMillis();
++            long nextWarning = NEXT_INVALID_POSITION_WARNING.get();
++            if (now >= nextWarning && NEXT_INVALID_POSITION_WARNING.compareAndSet(nextWarning, now + TimeUnit.SECONDS.toMillis(1L))) {
++                LOGGER.warn("Discarded an entity selector that produced non-finite position {}", pos);
++            }
++            throw ERROR_NON_FINITE_POSITION.create();
++        }
++        return pos;
++    }
++
+     private Predicate<Entity> getPredicate(final Vec3 pos, final @Nullable AABB absoluteAabb, final @Nullable FeatureFlagSet enabledFeatures) {
+         boolean filterFeatures = enabledFeatures != null;
+         boolean filterAabb = absoluteAabb != null;
 diff --git a/net/minecraft/commands/arguments/selector/options/EntitySelectorOptions.java b/net/minecraft/commands/arguments/selector/options/EntitySelectorOptions.java
-index 0897a2c1538f0cb572848c6ef7d0edfb172e2dea..b2b5a9621d377b1f18ed4857181309bdb7910c10 100644
+index 0897a2c1538f0cb572848c6ef7d0edfb172e2dea..5119baa871bfd85aacb3eef72aae061d67649a0d 100644
 --- a/net/minecraft/commands/arguments/selector/options/EntitySelectorOptions.java
 +++ b/net/minecraft/commands/arguments/selector/options/EntitySelectorOptions.java
 @@ -14,6 +14,8 @@ import java.util.Map;
@@ -157,8 +204,26 @@ index 0897a2c1538f0cb572848c6ef7d0edfb172e2dea..b2b5a9621d377b1f18ed4857181309bd
              }, s -> s.getDistance() == null, Component.translatable("argument.entity.options.distance.description"));
              register("level", parser -> {
                  int start = parser.getReader().getCursor();
-@@ -135,16 +146,19 @@ public class EntitySelectorOptions {
-                 parser.setZ(parser.getReader().readDouble());
+@@ -123,28 +134,34 @@ public class EntitySelectorOptions {
+                 }
+             }, s -> s.getLevel() == null, Component.translatable("argument.entity.options.level.description"));
+             register("x", parser -> {
++                int start = parser.getReader().getCursor();
+                 parser.setWorldLimited();
+-                parser.setX(parser.getReader().readDouble());
++                parser.setX(readFiniteCoordinate(parser, start));
+             }, s -> s.getX() == null, Component.translatable("argument.entity.options.x.description"));
+             register("y", parser -> {
++                int start = parser.getReader().getCursor();
+                 parser.setWorldLimited();
+-                parser.setY(parser.getReader().readDouble());
++                parser.setY(readFiniteCoordinate(parser, start));
+             }, s -> s.getY() == null, Component.translatable("argument.entity.options.y.description"));
+             register("z", parser -> {
++                int start = parser.getReader().getCursor();
+                 parser.setWorldLimited();
+-                parser.setZ(parser.getReader().readDouble());
++                parser.setZ(readFiniteCoordinate(parser, start));
              }, s -> s.getZ() == null, Component.translatable("argument.entity.options.z.description"));
              register("dx", parser -> {
 +                int start = parser.getReader().getCursor();
@@ -180,7 +245,7 @@ index 0897a2c1538f0cb572848c6ef7d0edfb172e2dea..b2b5a9621d377b1f18ed4857181309bd
              }, s -> s.getDeltaZ() == null, Component.translatable("argument.entity.options.dz.description"));
              register(
                  "x_rotation",
-@@ -505,6 +519,29 @@ public class EntitySelectorOptions {
+@@ -505,6 +522,38 @@ public class EntitySelectorOptions {
          return type.createWithContext(parser.getReader());
      }
  
@@ -198,11 +263,20 @@ index 0897a2c1538f0cb572848c6ef7d0edfb172e2dea..b2b5a9621d377b1f18ed4857181309bd
 +        return value;
 +    }
 +
++    private static double readFiniteCoordinate(final EntitySelectorParser parser, final int start) throws CommandSyntaxException {
++        double value = parser.getReader().readDouble();
++        if (!Double.isFinite(value)) {
++            logRejectedRange();
++            throw rollbackAndThrow(parser, start, EntitySelector.ERROR_NON_FINITE_POSITION);
++        }
++        return value;
++    }
++
 +    private static void logRejectedRange() {
 +        long now = Util.getMillis();
 +        long nextWarning = NEXT_RANGE_WARNING.get();
 +        if (now >= nextWarning && NEXT_RANGE_WARNING.compareAndSet(nextWarning, now + RANGE_WARNING_INTERVAL)) {
-+            LOGGER.warn("Discarded an entity selector whose distance or volume exceeded {} blocks", (int)EntitySelector.MAX_RANGE);
++            LOGGER.warn("Discarded an entity selector with non-finite coordinates or a distance/volume beyond {} blocks", (int)EntitySelector.MAX_RANGE);
 +        }
 +    }
 +    // Scissors end - reject crash-sized selector volumes instead of silently clamping user commands

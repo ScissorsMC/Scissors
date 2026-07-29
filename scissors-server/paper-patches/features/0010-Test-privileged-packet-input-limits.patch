@@ -1,0 +1,52 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Telesphoreo <me@telesphoreo.me>
+Date: Wed, 29 Jul 2026 01:39:41 -0400
+Subject: [PATCH] Test privileged packet input limits
+
+Cover test-instance dimensions and jigsaw generation depth at their accepted boundaries and beyond them.
+
+diff --git a/src/test/java/io/papermc/paper/scissors/PrivilegedPacketValidationTest.java b/src/test/java/io/papermc/paper/scissors/PrivilegedPacketValidationTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..4efd7ae0f0925f32252eedb7f2d8145a4406c967
+--- /dev/null
++++ b/src/test/java/io/papermc/paper/scissors/PrivilegedPacketValidationTest.java
+@@ -0,0 +1,39 @@
++package io.papermc.paper.scissors;
++
++import net.minecraft.core.BlockPos;
++import net.minecraft.core.Vec3i;
++import net.minecraft.network.protocol.game.ServerboundJigsawGeneratePacket;
++import net.minecraft.world.level.block.entity.StructureBlockEntity;
++import net.minecraft.world.level.block.entity.TestInstanceBlockEntity;
++import net.minecraft.world.level.levelgen.structure.structures.JigsawStructure;
++import org.bukkit.support.environment.Normal;
++import org.junit.jupiter.api.Test;
++
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++@Normal
++class PrivilegedPacketValidationTest {
++
++    @Test
++    void validatesTestInstanceSizeBoundaries() {
++        assertTrue(TestInstanceBlockEntity.isValidSize(Vec3i.ZERO));
++        assertTrue(TestInstanceBlockEntity.isValidSize(new Vec3i(
++            StructureBlockEntity.MAX_SIZE_PER_AXIS,
++            StructureBlockEntity.MAX_SIZE_PER_AXIS,
++            StructureBlockEntity.MAX_SIZE_PER_AXIS
++        )));
++        assertFalse(TestInstanceBlockEntity.isValidSize(new Vec3i(-1, 1, 1)));
++        assertFalse(TestInstanceBlockEntity.isValidSize(new Vec3i(1, StructureBlockEntity.MAX_SIZE_PER_AXIS + 1, 1)));
++        assertFalse(TestInstanceBlockEntity.isValidSize(new Vec3i(1, 1, Integer.MAX_VALUE)));
++    }
++
++    @Test
++    void validatesJigsawGenerationDepthBoundaries() {
++        assertTrue(new ServerboundJigsawGeneratePacket(BlockPos.ZERO, JigsawStructure.MIN_DEPTH, false).hasValidLevels());
++        assertTrue(new ServerboundJigsawGeneratePacket(BlockPos.ZERO, JigsawStructure.MAX_DEPTH, false).hasValidLevels());
++        assertFalse(new ServerboundJigsawGeneratePacket(BlockPos.ZERO, JigsawStructure.MIN_DEPTH - 1, false).hasValidLevels());
++        assertFalse(new ServerboundJigsawGeneratePacket(BlockPos.ZERO, JigsawStructure.MAX_DEPTH + 1, false).hasValidLevels());
++        assertFalse(new ServerboundJigsawGeneratePacket(BlockPos.ZERO, Integer.MAX_VALUE, false).hasValidLevels());
++    }
++}

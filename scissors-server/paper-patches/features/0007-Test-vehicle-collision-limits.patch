@@ -6,14 +6,19 @@ Subject: [PATCH] Test vehicle collision limits
 
 diff --git a/src/test/java/io/papermc/paper/scissors/VehicleCollisionLimitTest.java b/src/test/java/io/papermc/paper/scissors/VehicleCollisionLimitTest.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..0f937ec20a0f1392eff5ef0e65c7004f9fd5c85d
+index 0000000000000000000000000000000000000000..0a1dfce8b4e0c14954b965092257c31a429390b9
 --- /dev/null
 +++ b/src/test/java/io/papermc/paper/scissors/VehicleCollisionLimitTest.java
-@@ -0,0 +1,36 @@
+@@ -0,0 +1,69 @@
 +package io.papermc.paper.scissors;
 +
 +import java.lang.reflect.InvocationTargetException;
 +import java.lang.reflect.Method;
++import java.util.Collections;
++import java.util.List;
++import java.util.concurrent.atomic.AtomicInteger;
++import java.util.function.Predicate;
++import net.minecraft.world.entity.Entity;
 +import net.minecraft.world.entity.vehicle.VehicleEntity;
 +import org.bukkit.support.environment.Normal;
 +import org.junit.jupiter.api.Test;
@@ -27,13 +32,28 @@ index 0000000000000000000000000000000000000000..0f937ec20a0f1392eff5ef0e65c7004f
 +    void honorsSmallerConfiguredLimit() {
 +        assertEquals(8, collisionLimit(8));
 +        assertEquals(1, collisionLimit(1));
++        assertEquals(16, collisionLimit(16));
++        assertEquals(16, collisionLimit(17));
 +    }
 +
 +    @Test
-+    void retainsSecurityLimitWhenConfigurationIsDisabledOrExcessive() {
-+        assertEquals(16, collisionLimit(0));
-+        assertEquals(16, collisionLimit(-1));
++    void handlesDisabledAndExcessiveConfiguration() {
++        assertEquals(0, collisionLimit(0));
++        assertEquals(0, collisionLimit(-1));
 +        assertEquals(16, collisionLimit(1000));
++    }
++
++    @Test
++    void evaluatesPredicatesOnlyForBoundedRawCandidates() {
++        final AtomicInteger evaluations = new AtomicInteger();
++        final List<Entity> candidates = Collections.nCopies(100, null);
++        final List<Entity> selected = filterCollisionCandidates(candidates, entity -> {
++            evaluations.incrementAndGet();
++            return true;
++        }, 16);
++
++        assertEquals(16, evaluations.get());
++        assertEquals(16, selected.size());
 +    }
 +
 +    private static int collisionLimit(final int configuredLimit) {
@@ -41,6 +61,19 @@ index 0000000000000000000000000000000000000000..0f937ec20a0f1392eff5ef0e65c7004f
 +            final Method method = VehicleEntity.class.getDeclaredMethod("collisionLimit", int.class);
 +            method.setAccessible(true);
 +            return (int)method.invoke(null, configuredLimit);
++        } catch (final NoSuchMethodException | IllegalAccessException | InvocationTargetException exception) {
++            throw new AssertionError(exception);
++        }
++    }
++
++    @SuppressWarnings("unchecked")
++    private static List<Entity> filterCollisionCandidates(
++        final List<Entity> candidates, final Predicate<? super Entity> predicate, final int collisionLimit
++    ) {
++        try {
++            final Method method = VehicleEntity.class.getDeclaredMethod("filterCollisionCandidates", List.class, Predicate.class, int.class);
++            method.setAccessible(true);
++            return (List<Entity>)method.invoke(null, candidates, predicate, collisionLimit);
 +        } catch (final NoSuchMethodException | IllegalAccessException | InvocationTargetException exception) {
 +            throw new AssertionError(exception);
 +        }

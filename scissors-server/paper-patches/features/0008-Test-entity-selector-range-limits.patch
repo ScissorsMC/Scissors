@@ -6,10 +6,10 @@ Subject: [PATCH] Test entity selector range limits
 
 diff --git a/src/test/java/io/papermc/paper/scissors/EntitySelectorRangeTest.java b/src/test/java/io/papermc/paper/scissors/EntitySelectorRangeTest.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..aaf3006166bbe037ca5a396c2eb2c4432e2c71b9
+index 0000000000000000000000000000000000000000..6ee175014cfc600ae010ca433837ce02fbefe863
 --- /dev/null
 +++ b/src/test/java/io/papermc/paper/scissors/EntitySelectorRangeTest.java
-@@ -0,0 +1,83 @@
+@@ -0,0 +1,93 @@
 +package io.papermc.paper.scissors;
 +
 +import com.mojang.brigadier.StringReader;
@@ -41,6 +41,8 @@ index 0000000000000000000000000000000000000000..aaf3006166bbe037ca5a396c2eb2c443
 +    void acceptsBoundaryRanges() {
 +        assertDoesNotThrow(() -> parse("@e[distance=..1024]"));
 +        assertDoesNotThrow(() -> parse("@e[dx=-1024,dy=1024,dz=0]"));
++        final String largeFiniteCoordinate = "9".repeat(300);
++        assertDoesNotThrow(() -> parse("@e[x=" + largeFiniteCoordinate + ",y=-" + largeFiniteCoordinate + ",z=" + largeFiniteCoordinate + ",dx=1]"));
 +    }
 +
 +    @Test
@@ -50,6 +52,14 @@ index 0000000000000000000000000000000000000000..aaf3006166bbe037ca5a396c2eb2c443
 +        assertThrows(CommandSyntaxException.class, () -> parse("@e[dx=1025]"));
 +        assertThrows(CommandSyntaxException.class, () -> parse("@e[dy=-1025]"));
 +        assertThrows(CommandSyntaxException.class, () -> parse("@e[dz=1000000000]"));
++    }
++
++    @Test
++    void rejectsNonFiniteAbsoluteCoordinates() {
++        final String overflowingNumber = "9".repeat(400);
++        assertThrows(CommandSyntaxException.class, () -> parse("@e[x=" + overflowingNumber + ",distance=..1024]"));
++        assertThrows(CommandSyntaxException.class, () -> parse("@e[y=-" + overflowingNumber + ",dx=1]"));
++        assertThrows(CommandSyntaxException.class, () -> parse("@e[z=" + overflowingNumber + ",dz=1]"));
 +    }
 +
 +    @Test

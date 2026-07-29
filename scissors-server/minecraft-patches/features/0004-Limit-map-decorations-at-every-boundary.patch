@@ -3,29 +3,36 @@ From: Telesphoreo <me@telesphoreo.me>
 Date: Wed, 29 Jul 2026 00:36:05 -0400
 Subject: [PATCH] Limit map decorations at every boundary
 
-Oversized decoration components can be copied into map state and emitted as unbounded client packets. Preserve the first 256 valid decorations at component construction, saved-map insertion, and final packet creation while logging discarded entries.
+Cap persistent and outgoing map decoration collections at 256 entries. At the final client boundary, strip names beyond 32 visible characters or 64 component nodes and refuse interactive or unsupported component contents so stored or plugin-created payloads cannot bypass sanitation.
 
 diff --git a/net/minecraft/network/protocol/game/ClientboundMapItemDataPacket.java b/net/minecraft/network/protocol/game/ClientboundMapItemDataPacket.java
-index 27398fd91bc89daa030f77cf354ba382bdf80dad..52365f013862427f4cb8c3bdbb54a96b53a6e722 100644
+index 27398fd91bc89daa030f77cf354ba382bdf80dad..de82c5f461963eae91ce421a1585b76c9aa93f4f 100644
 --- a/net/minecraft/network/protocol/game/ClientboundMapItemDataPacket.java
 +++ b/net/minecraft/network/protocol/game/ClientboundMapItemDataPacket.java
-@@ -1,8 +1,11 @@
+@@ -1,21 +1,36 @@
  package net.minecraft.network.protocol.game;
  
 +import com.mojang.logging.LogUtils;
++import java.util.ArrayDeque;
++import java.util.ArrayList;
  import java.util.Collection;
  import java.util.List;
  import java.util.Optional;
 +import java.util.concurrent.TimeUnit;
 +import java.util.concurrent.atomic.AtomicLong;
  import net.minecraft.network.RegistryFriendlyByteBuf;
++import net.minecraft.network.chat.Component;
++import net.minecraft.network.chat.contents.KeybindContents;
++import net.minecraft.network.chat.contents.PlainTextContents;
++import net.minecraft.network.chat.contents.TranslatableContents;
  import net.minecraft.network.codec.ByteBufCodecs;
  import net.minecraft.network.codec.StreamCodec;
-@@ -11,11 +14,15 @@ import net.minecraft.network.protocol.PacketType;
+ import net.minecraft.network.protocol.Packet;
+ import net.minecraft.network.protocol.PacketType;
++import net.minecraft.world.item.component.MapDecorations;
  import net.minecraft.world.level.saveddata.maps.MapDecoration;
  import net.minecraft.world.level.saveddata.maps.MapId;
  import net.minecraft.world.level.saveddata.maps.MapItemSavedData;
-+import net.minecraft.world.item.component.MapDecorations;
  import org.jspecify.annotations.Nullable;
 +import org.slf4j.Logger;
  
@@ -33,11 +40,13 @@ index 27398fd91bc89daa030f77cf354ba382bdf80dad..52365f013862427f4cb8c3bdbb54a96b
      MapId mapId, byte scale, boolean locked, Optional<List<MapDecoration>> decorations, Optional<MapItemSavedData.MapPatch> colorPatch
  ) implements Packet<ClientGamePacketListener> {
 +    private static final Logger LOGGER = LogUtils.getLogger();
++    private static final int MAX_DECORATION_NAME_LENGTH = 32;
++    private static final int MAX_DECORATION_NAME_COMPONENTS = 64;
 +    private static final AtomicLong NEXT_DECORATION_WARNING_NANOS = new AtomicLong();
      public static final StreamCodec<RegistryFriendlyByteBuf, ClientboundMapItemDataPacket> STREAM_CODEC = StreamCodec.composite(
          MapId.STREAM_CODEC,
          ClientboundMapItemDataPacket::mapId,
-@@ -30,6 +37,29 @@ public record ClientboundMapItemDataPacket(
+@@ -30,6 +45,76 @@ public record ClientboundMapItemDataPacket(
          ClientboundMapItemDataPacket::new
      );
  
@@ -47,20 +56,67 @@ index 27398fd91bc89daa030f77cf354ba382bdf80dad..52365f013862427f4cb8c3bdbb54a96b
 +    }
 +
 +    private static List<MapDecoration> sanitizeDecorations(final List<MapDecoration> decorations) {
-+        if (decorations.size() <= MapDecorations.MAX_DECORATIONS) {
-+            return List.copyOf(decorations);
++        int retainedDecorations = Math.min(decorations.size(), MapDecorations.MAX_DECORATIONS);
++        int strippedNames = 0;
++        List<MapDecoration> sanitized = new ArrayList<>(retainedDecorations);
++        for (int i = 0; i < retainedDecorations; i++) {
++            MapDecoration decoration = decorations.get(i);
++            if (decoration.name().filter(name -> !isSafeDecorationName(name)).isPresent()) {
++                decoration = new MapDecoration(decoration.type(), decoration.x(), decoration.y(), decoration.rot(), Optional.empty());
++                strippedNames++;
++            }
++            sanitized.add(decoration);
 +        }
 +
-+        long now = System.nanoTime();
-+        long nextWarning = NEXT_DECORATION_WARNING_NANOS.get();
-+        if (now >= nextWarning && NEXT_DECORATION_WARNING_NANOS.compareAndSet(nextWarning, now + TimeUnit.SECONDS.toNanos(10))) {
-+            LOGGER.warn(
-+                "Discarded {} excess decorations from an outgoing map packet; maximum is {}",
-+                decorations.size() - MapDecorations.MAX_DECORATIONS,
-+                MapDecorations.MAX_DECORATIONS
-+            );
++        int excessDecorations = decorations.size() - retainedDecorations;
++        if (excessDecorations > 0 || strippedNames > 0) {
++            long now = System.nanoTime();
++            long nextWarning = NEXT_DECORATION_WARNING_NANOS.get();
++            if (now >= nextWarning && NEXT_DECORATION_WARNING_NANOS.compareAndSet(nextWarning, now + TimeUnit.SECONDS.toNanos(10))) {
++                LOGGER.warn(
++                    "Sanitized outgoing map decorations: discarded {} excess entries and stripped {} unsafe names "
++                        + "(maximum {} visible characters and {} component nodes; interactive or unsupported contents are refused)",
++                    excessDecorations,
++                    strippedNames,
++                    MAX_DECORATION_NAME_LENGTH,
++                    MAX_DECORATION_NAME_COMPONENTS
++                );
++            }
 +        }
-+        return List.copyOf(decorations.subList(0, MapDecorations.MAX_DECORATIONS));
++        return List.copyOf(sanitized);
++    }
++
++    private static boolean isSafeDecorationName(final Component name) {
++        if (name.getString(MAX_DECORATION_NAME_LENGTH + 1).length() > MAX_DECORATION_NAME_LENGTH) {
++            return false;
++        }
++
++        ArrayDeque<Component> pending = new ArrayDeque<>();
++        int visited = 0;
++        pending.add(name);
++        while (!pending.isEmpty()) {
++            Component component = pending.removeLast();
++            if (++visited > MAX_DECORATION_NAME_COMPONENTS) {
++                return false;
++            }
++            if (component.getStyle().getClickEvent() != null
++                || component.getStyle().getHoverEvent() != null
++                || component.getStyle().getInsertion() != null) {
++                return false;
++            }
++
++            pending.addAll(component.getSiblings());
++            if (component.getContents() instanceof TranslatableContents translatable) {
++                for (Object argument : translatable.getArgs()) {
++                    if (argument instanceof Component argumentComponent) {
++                        pending.add(argumentComponent);
++                    }
++                }
++            } else if (!(component.getContents() instanceof PlainTextContents) && !(component.getContents() instanceof KeybindContents)) {
++                return false;
++            }
++        }
++        return true;
 +    }
 +    // Scissors end - enforce the map decoration limit at the final client boundary too
 +
@@ -68,10 +124,10 @@ index 27398fd91bc89daa030f77cf354ba382bdf80dad..52365f013862427f4cb8c3bdbb54a96b
          final MapId mapId,
          final byte scale,
 diff --git a/net/minecraft/world/item/component/MapDecorations.java b/net/minecraft/world/item/component/MapDecorations.java
-index 4b6d7817847a3105c744723c85b1cf9955b3847e..41d39dd181b5ba55beaf76a001d606df87b8c622 100644
+index 4b6d7817847a3105c744723c85b1cf9955b3847e..73e9ee313b00dfaa0776cdf84605807dbde440bf 100644
 --- a/net/minecraft/world/item/component/MapDecorations.java
 +++ b/net/minecraft/world/item/component/MapDecorations.java
-@@ -1,17 +1,38 @@
+@@ -1,17 +1,45 @@
  package net.minecraft.world.item.component;
  
 +import com.mojang.logging.LogUtils;
@@ -80,6 +136,8 @@ index 4b6d7817847a3105c744723c85b1cf9955b3847e..41d39dd181b5ba55beaf76a001d606df
 +import java.util.Collections;
 +import java.util.LinkedHashMap;
  import java.util.Map;
++import java.util.concurrent.TimeUnit;
++import java.util.concurrent.atomic.AtomicLong;
  import net.minecraft.core.Holder;
  import net.minecraft.util.Util;
  import net.minecraft.world.level.saveddata.maps.MapDecorationType;
@@ -87,6 +145,7 @@ index 4b6d7817847a3105c744723c85b1cf9955b3847e..41d39dd181b5ba55beaf76a001d606df
  
  public record MapDecorations(Map<String, MapDecorations.Entry> decorations) {
 +    private static final Logger LOGGER = LogUtils.getLogger();
++    private static final AtomicLong NEXT_DECORATION_WARNING_NANOS = new AtomicLong();
 +    public static final int MAX_DECORATIONS = 256;
      public static final MapDecorations EMPTY = new MapDecorations(Map.of());
      public static final Codec<MapDecorations> CODEC = Codec.unboundedMap(Codec.STRING, MapDecorations.Entry.CODEC)
@@ -95,11 +154,15 @@ index 4b6d7817847a3105c744723c85b1cf9955b3847e..41d39dd181b5ba55beaf76a001d606df
 +    // Scissors start - eliminate excessive item decorations at their persistent component boundary
 +    public MapDecorations {
 +        if (decorations.size() > MAX_DECORATIONS) {
-+            LOGGER.warn(
-+                "Discarded {} excess map decorations from an item component; maximum is {}",
-+                decorations.size() - MAX_DECORATIONS,
-+                MAX_DECORATIONS
-+            );
++            long now = System.nanoTime();
++            long nextWarning = NEXT_DECORATION_WARNING_NANOS.get();
++            if (now >= nextWarning && NEXT_DECORATION_WARNING_NANOS.compareAndSet(nextWarning, now + TimeUnit.SECONDS.toNanos(10))) {
++                LOGGER.warn(
++                    "Discarded {} excess map decorations from an item component; maximum is {}",
++                    decorations.size() - MAX_DECORATIONS,
++                    MAX_DECORATIONS
++                );
++            }
 +        }
 +        LinkedHashMap<String, MapDecorations.Entry> sanitized = new LinkedHashMap<>(Math.min(decorations.size(), MAX_DECORATIONS));
 +        decorations.entrySet().stream().limit(MAX_DECORATIONS).forEach(entry -> sanitized.put(entry.getKey(), entry.getValue()));

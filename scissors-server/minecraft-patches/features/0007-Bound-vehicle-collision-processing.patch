@@ -6,20 +6,28 @@ Subject: [PATCH] Bound vehicle collision processing
 Boat and both minecart movement implementations previously materialized and processed every nearby entity. Stop entity lookup after the configured limit or a hard cap of 16, preserve the vehicles, and rate-limit overflow logging.
 
 diff --git a/net/minecraft/world/entity/vehicle/VehicleEntity.java b/net/minecraft/world/entity/vehicle/VehicleEntity.java
-index 96b0fa2ebab15a939a5162d23b3ad9b92365d818..9d9aa40526fa6c7117a15312ce412d9e86605c41 100644
+index 96b0fa2ebab15a939a5162d23b3ad9b92365d818..3cc3d87b9c0701d0907f4ebcc9a29bf898afe0b5 100644
 --- a/net/minecraft/world/entity/vehicle/VehicleEntity.java
 +++ b/net/minecraft/world/entity/vehicle/VehicleEntity.java
-@@ -1,5 +1,9 @@
+@@ -1,10 +1,17 @@
  package net.minecraft.world.entity.vehicle;
  
 +import com.mojang.logging.LogUtils;
 +import java.util.ArrayList;
 +import java.util.List;
++import java.util.concurrent.TimeUnit;
++import java.util.concurrent.atomic.AtomicLong;
 +import java.util.function.Predicate;
  import net.minecraft.core.component.DataComponents;
  import net.minecraft.network.syncher.EntityDataAccessor;
  import net.minecraft.network.syncher.EntityDataSerializers;
-@@ -16,11 +20,18 @@ import net.minecraft.world.level.Explosion;
+ import net.minecraft.network.syncher.SynchedEntityData;
+ import net.minecraft.server.level.ServerLevel;
++import net.minecraft.util.Util;
+ import net.minecraft.world.damagesource.DamageSource;
+ import net.minecraft.world.entity.Entity;
+ import net.minecraft.world.entity.EntityType;
+@@ -16,8 +23,15 @@ import net.minecraft.world.level.Explosion;
  import net.minecraft.world.level.Level;
  import net.minecraft.world.level.gameevent.GameEvent;
  import net.minecraft.world.level.gamerules.GameRules;
@@ -30,15 +38,12 @@ index 96b0fa2ebab15a939a5162d23b3ad9b92365d818..9d9aa40526fa6c7117a15312ce412d9e
  public abstract class VehicleEntity extends Entity {
 +    private static final Logger LOGGER = LogUtils.getLogger();
 +    private static final int MAX_VEHICLE_COLLISIONS = 16;
-+    private static final int COLLISION_OVERFLOW_WARNING_INTERVAL_TICKS = 100;
++    private static final long COLLISION_OVERFLOW_WARNING_INTERVAL = TimeUnit.SECONDS.toMillis(1L);
++    private static final AtomicLong NEXT_COLLISION_OVERFLOW_WARNING = new AtomicLong();
      protected static final EntityDataAccessor<Integer> DATA_ID_HURT = SynchedEntityData.defineId(VehicleEntity.class, EntityDataSerializers.INT);
      protected static final EntityDataAccessor<Integer> DATA_ID_HURTDIR = SynchedEntityData.defineId(VehicleEntity.class, EntityDataSerializers.INT);
      protected static final EntityDataAccessor<Float> DATA_ID_DAMAGE = SynchedEntityData.defineId(VehicleEntity.class, EntityDataSerializers.FLOAT);
-+    private int nextCollisionOverflowWarningTick;
- 
-     public VehicleEntity(final EntityType<?> type, final Level level) {
-         super(type, level);
-@@ -131,6 +142,39 @@ public abstract class VehicleEntity extends Entity {
+@@ -131,6 +145,59 @@ public abstract class VehicleEntity extends Entity {
          return this.entityData.get(DATA_ID_HURTDIR);
      }
  
@@ -46,17 +51,24 @@ index 96b0fa2ebab15a939a5162d23b3ad9b92365d818..9d9aa40526fa6c7117a15312ce412d9e
 +    protected List<Entity> getCollisionEntities(final AABB hitbox, final Predicate<? super Entity> predicate) {
 +        int configuredLimit = this.level().isClientSide() ? MAX_VEHICLE_COLLISIONS : this.level().paperConfig().collisions.maxEntityCollisions;
 +        int collisionLimit = collisionLimit(configuredLimit);
-+        List<Entity> entities = new ArrayList<>(collisionLimit + 1);
++        if (collisionLimit == 0) {
++            return List.of();
++        }
++
++        List<Entity> candidates = new ArrayList<>(collisionLimit + 1);
 +        this.level().getEntities(
 +            EntityTypeTest.forClass(Entity.class),
 +            hitbox,
-+            entity -> entity != this && predicate.test(entity),
-+            entities,
++            entity -> entity != this,
++            candidates,
 +            collisionLimit + 1
 +        );
-+        if (entities.size() > collisionLimit) {
-+            if (!this.level().isClientSide() && this.tickCount >= this.nextCollisionOverflowWarningTick) {
-+                this.nextCollisionOverflowWarningTick = this.tickCount + COLLISION_OVERFLOW_WARNING_INTERVAL_TICKS;
++        if (candidates.size() > collisionLimit) {
++            long now = Util.getMillis();
++            long nextWarning = NEXT_COLLISION_OVERFLOW_WARNING.get();
++            if (!this.level().isClientSide()
++                && now >= nextWarning
++                && NEXT_COLLISION_OVERFLOW_WARNING.compareAndSet(nextWarning, now + COLLISION_OVERFLOW_WARNING_INTERVAL)) {
 +                LOGGER.warn(
 +                    "Limited collision processing for {} with UUID {} at {} to {} entities",
 +                    this.getType(),
@@ -65,13 +77,26 @@ index 96b0fa2ebab15a939a5162d23b3ad9b92365d818..9d9aa40526fa6c7117a15312ce412d9e
 +                    collisionLimit
 +                );
 +            }
-+            return entities.subList(0, collisionLimit);
 +        }
-+        return entities;
++        return filterCollisionCandidates(candidates, predicate, collisionLimit);
 +    }
 +
 +    static int collisionLimit(final int configuredLimit) {
-+        return configuredLimit > 0 ? Math.min(configuredLimit, MAX_VEHICLE_COLLISIONS) : MAX_VEHICLE_COLLISIONS;
++        return Math.max(0, Math.min(configuredLimit, MAX_VEHICLE_COLLISIONS));
++    }
++
++    static List<Entity> filterCollisionCandidates(
++        final List<Entity> candidates, final Predicate<? super Entity> predicate, final int collisionLimit
++    ) {
++        int examinedCandidates = Math.min(candidates.size(), collisionLimit);
++        List<Entity> entities = new ArrayList<>(examinedCandidates);
++        for (int i = 0; i < examinedCandidates; i++) {
++            Entity entity = candidates.get(i);
++            if (predicate.test(entity)) {
++                entities.add(entity);
++            }
++        }
++        return entities;
 +    }
 +    // Scissors end - bound collision queries without destroying legitimate crowded vehicles
 +
