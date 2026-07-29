@@ -19,14 +19,17 @@ body:
       description: >
         Paste the full output of the `/version` command from your server. It includes
         everything needed to identify your build: the Minecraft version, the Scissors
-        build number and commit, whether you are behind the latest build, and the
-        upstream Paper build Scissors is based on. Automatically formatted, no
-        backticks needed.
+        build number, commit and build date, the API and previous versions, whether you
+        are behind the latest build, and the upstream Paper build Scissors is based on.
+        Automatically formatted, no backticks needed.
       render: text
       placeholder: |
-        This server is running Scissors version 26.2-10-master@4abd686 (2026-07-29T03:03:51Z) (Implementing API version 26.2.build.10-stable)
-        You are running the latest version
-        Based on Paper build 87 (a95ae8d)
+        Version: 26.2-16-378bd23, based on Paper build 87
+        Built: 2026-07-29 19:50 UTC
+        API: 26.2.build.16-stable
+        Status: You are running the latest version
+        Previous: 26.2-DEV-4ff9176 (MC: 26.2)
+        Website: https://scissors.gg
     validations:
       required: true
   - type: input
