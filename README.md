@@ -52,3 +52,10 @@ Git boundaries, Scissors/Paper naming boundary, and required verification. The
 layout is based on the
 [paperweight fork example](https://github.com/PaperMC/paperweight-examples/tree/v2-fork)
 and follows conventions used by [Folia](https://github.com/PaperMC/Folia).
+
+## License
+
+Scissors is distributed under the GNU General Public License version 3 only.
+Individual authors may additionally offer their own contributions under the
+MIT License. See [LICENSING.md](LICENSING.md) for the scope of those grants and
+the upstream licensing notices.
