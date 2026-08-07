@@ -15,8 +15,14 @@ build
 
 .idea/
 
+# Local exploit reproduction notes and payload documentation
+/docs/
+
 # Local Pelican deploy config (contains a secret API key)
 /scripts/pelican.config.psd1
 
 # Local Fill management config (contains the Fill admin password)
 /scripts/fill.config.psd1
+
+# Local hotbar for analyzing NBT payloads
+hotbar.nbt
