@@ -1,0 +1,196 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Scissors <noreply@scissorsmc.github.io>
+Date: Fri, 7 Aug 2026 12:07:49 -0400
+Subject: [PATCH] Test area effect cloud particle sanitization
+
+Cover the particle allowlist, work and lifetime bounds, malformed values, the reported cross-type spawn egg, and recursive bundle/container/projectile carriers.
+
+diff --git a/src/test/java/io/papermc/paper/item/AreaEffectCloudParticleTest.java b/src/test/java/io/papermc/paper/item/AreaEffectCloudParticleTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..537352eb3868ee2d1d98332f31ce89e92e2940fd
+--- /dev/null
++++ b/src/test/java/io/papermc/paper/item/AreaEffectCloudParticleTest.java
+@@ -0,0 +1,183 @@
++package io.papermc.paper.item;
++
++import java.util.List;
++import net.minecraft.core.component.DataComponents;
++import net.minecraft.core.particles.ColorParticleOption;
++import net.minecraft.core.particles.ParticleOptions;
++import net.minecraft.core.particles.ParticleTypes;
++import net.minecraft.core.particles.PowerParticleOption;
++import net.minecraft.nbt.CompoundTag;
++import net.minecraft.nbt.NbtOps;
++import net.minecraft.world.entity.AreaEffectCloud;
++import net.minecraft.world.entity.EntityTypes;
++import net.minecraft.world.item.ItemStack;
++import net.minecraft.world.item.ItemStackTemplate;
++import net.minecraft.world.item.Items;
++import net.minecraft.world.item.SpawnEggItem;
++import net.minecraft.world.item.component.BundleContents;
++import net.minecraft.world.item.component.ChargedProjectiles;
++import net.minecraft.world.item.component.ItemContainerContents;
++import net.minecraft.world.item.component.TypedEntityData;
++import org.bukkit.support.environment.AllFeatures;
++import org.junit.jupiter.api.Test;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertNotSame;
++import static org.junit.jupiter.api.Assertions.assertSame;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++@AllFeatures
++class AreaEffectCloudParticleTest {
++
++    @Test
++    void onlyAllowsCanonicalVanillaCloudParticles() {
++        assertFalse(AreaEffectCloud.isParticleSafeForCloud(ParticleTypes.ELDER_GUARDIAN));
++        assertFalse(AreaEffectCloud.isParticleSafeForCloud(ParticleTypes.EXPLOSION_EMITTER));
++        assertFalse(AreaEffectCloud.isParticleSafeForCloud(ParticleTypes.FLAME));
++        assertTrue(AreaEffectCloud.isParticleSafeForCloud(ColorParticleOption.create(ParticleTypes.ENTITY_EFFECT, -1)));
++        assertTrue(AreaEffectCloud.isParticleSafeForCloud(PowerParticleOption.create(ParticleTypes.DRAGON_BREATH, 1.0F)));
++        assertFalse(AreaEffectCloud.isParticleSafeForCloud(PowerParticleOption.create(ParticleTypes.DRAGON_BREATH, Float.NaN)));
++        assertFalse(AreaEffectCloud.isParticleSafeForCloud(PowerParticleOption.create(ParticleTypes.DRAGON_BREATH, Float.MAX_VALUE)));
++    }
++
++    @Test
++    void boundsEveryValueWhichControlsCloudWorkOrLifetime() {
++        assertEquals(7.0F, AreaEffectCloud.sanitizeRadius(80.0F));
++        assertEquals(3.0F, AreaEffectCloud.sanitizeRadius(Float.NaN));
++        assertEquals(600, AreaEffectCloud.sanitizeDuration(72_000));
++        assertEquals(600, AreaEffectCloud.sanitizeDuration(AreaEffectCloud.INFINITE_DURATION));
++        assertEquals(20, AreaEffectCloud.sanitizeWaitTime(Integer.MAX_VALUE));
++        assertEquals(0, AreaEffectCloud.sanitizeWaitTime(Integer.MIN_VALUE));
++        assertEquals(0, AreaEffectCloud.sanitizeAge(Integer.MIN_VALUE));
++        assertEquals(620, AreaEffectCloud.sanitizeAge(Integer.MAX_VALUE));
++    }
++
++    @Test
++    void restoresTheReportedCloudEggToItsRegisteredEntityType() {
++        final ItemStack egg = cloudEgg("custom_particle", ParticleTypes.ELDER_GUARDIAN);
++        CompoundTag tag = entityData(egg);
++        tag.putFloat("Radius", 80.0F);
++        tag.putInt("Duration", 72_000);
++        tag.putInt("Age", Integer.MIN_VALUE);
++        tag.putInt("WaitTime", Integer.MAX_VALUE);
++        egg.set(DataComponents.ENTITY_DATA, TypedEntityData.of(EntityTypes.AREA_EFFECT_CLOUD, tag));
++
++        final ItemStack sanitized = ItemStack.sanitizeUnsafeData(egg);
++
++        assertNotSame(egg, sanitized);
++        assertEquals(EntityTypes.ELDER_GUARDIAN, sanitized.get(DataComponents.ENTITY_DATA).type());
++        assertEquals(EntityTypes.ELDER_GUARDIAN, SpawnEggItem.getType(sanitized));
++        assertTrue(entityData(egg).contains("custom_particle"));
++        assertFalse(entityData(sanitized).contains("custom_particle"));
++        assertFalse(entityData(sanitized).contains("Radius"));
++        assertFalse(entityData(sanitized).contains("Duration"));
++    }
++
++    @Test
++    void stripsLegacyAndMalformedParticleValues() {
++        final ItemStack legacy = cloudDataItem("Particle", ParticleTypes.ELDER_GUARDIAN);
++        assertFalse(entityData(ItemStack.sanitizeUnsafeData(legacy)).contains("Particle"));
++
++        final CompoundTag malformed = new CompoundTag();
++        malformed.putString("custom_particle", "not a particle value");
++        final ItemStack item = cloudDataItem(malformed);
++        assertFalse(entityData(ItemStack.sanitizeUnsafeData(item)).contains("custom_particle"));
++    }
++
++    @Test
++    void sanitizesCloudFieldsEvenOutsideTheSpawnEggVector() {
++        final CompoundTag tag = new CompoundTag();
++        tag.putFloat("Radius", 80.0F);
++        tag.putInt("Duration", 72_000);
++        tag.putInt("Age", Integer.MIN_VALUE);
++        tag.putInt("WaitTime", Integer.MAX_VALUE);
++        final CompoundTag sanitized = entityData(ItemStack.sanitizeUnsafeData(cloudDataItem(tag)));
++        assertEquals(7.0F, sanitized.getFloatOr("Radius", -1.0F));
++        assertEquals(600, sanitized.getIntOr("Duration", -1));
++        assertEquals(0, sanitized.getIntOr("Age", -1));
++        assertEquals(20, sanitized.getIntOr("WaitTime", -1));
++
++        final CompoundTag malformed = new CompoundTag();
++        malformed.putString("Radius", "bad");
++        malformed.putString("Duration", "bad");
++        malformed.putString("Age", "bad");
++        malformed.putString("WaitTime", "bad");
++        final CompoundTag repaired = entityData(ItemStack.sanitizeUnsafeData(cloudDataItem(malformed)));
++        assertEquals(3.0F, repaired.getFloatOr("Radius", -1.0F));
++        assertEquals(600, repaired.getIntOr("Duration", -1));
++        assertEquals(0, repaired.getIntOr("Age", -1));
++        assertEquals(20, repaired.getIntOr("WaitTime", -1));
++    }
++
++    @Test
++    void recursivelySanitizesEveryNestedItemCarrier() {
++        final ItemStack egg = cloudEgg("custom_particle", ParticleTypes.FLAME);
++        CompoundTag tag = entityData(egg);
++        tag.putFloat("Radius", 80.0F);
++        egg.set(DataComponents.ENTITY_DATA, TypedEntityData.of(EntityTypes.AREA_EFFECT_CLOUD, tag));
++        final ItemStackTemplate nested = ItemStackTemplate.fromNonEmptyStack(egg);
++
++        final ItemStack bundle = new ItemStack(Items.BUNDLE);
++        bundle.set(DataComponents.BUNDLE_CONTENTS, new BundleContents(List.of(nested)));
++        ItemStack bundledEgg = ItemStack.sanitizeUnsafeData(bundle).get(DataComponents.BUNDLE_CONTENTS).items().getFirst().create();
++        assertSanitizedNestedEgg(bundledEgg);
++
++        final ItemStack crossbow = new ItemStack(Items.CROSSBOW);
++        crossbow.set(DataComponents.CHARGED_PROJECTILES, ChargedProjectiles.of(nested));
++        ItemStack chargedEgg = ItemStack.sanitizeUnsafeData(crossbow).get(DataComponents.CHARGED_PROJECTILES).items().getFirst().create();
++        assertSanitizedNestedEgg(chargedEgg);
++
++        final ItemStack shulker = new ItemStack(Items.SHULKER_BOX);
++        shulker.set(DataComponents.CONTAINER, ItemContainerContents.fromItems(List.of(egg)));
++        ItemStack containedEgg = ItemStack.sanitizeUnsafeData(shulker).get(DataComponents.CONTAINER).nonEmptyItemCopyStream().findFirst().orElseThrow();
++        assertSanitizedNestedEgg(containedEgg);
++
++        final ItemStack nestedBundle = new ItemStack(Items.BUNDLE);
++        nestedBundle.set(DataComponents.BUNDLE_CONTENTS, new BundleContents(List.of(ItemStackTemplate.fromNonEmptyStack(shulker))));
++        ItemStack nestedShulker = ItemStack.sanitizeUnsafeData(nestedBundle).get(DataComponents.BUNDLE_CONTENTS).items().getFirst().create();
++        ItemStack deeplyNestedEgg = nestedShulker.get(DataComponents.CONTAINER).nonEmptyItemCopyStream().findFirst().orElseThrow();
++        assertSanitizedNestedEgg(deeplyNestedEgg);
++    }
++
++    @Test
++    void preservesNormalCloudParticle() {
++        final ItemStack item = cloudDataItem("custom_particle", PowerParticleOption.create(ParticleTypes.DRAGON_BREATH, 1.0F));
++
++        assertSame(item, ItemStack.sanitizeUnsafeData(item));
++    }
++
++    private static void assertSanitizedNestedEgg(final ItemStack egg) {
++        assertEquals(EntityTypes.ELDER_GUARDIAN, SpawnEggItem.getType(egg));
++        assertFalse(entityData(egg).contains("custom_particle"));
++        assertFalse(entityData(egg).contains("Radius"));
++    }
++
++    private static ItemStack cloudEgg(final String particleKey, final ParticleOptions particle) {
++        final CompoundTag tag = new CompoundTag();
++        tag.put(particleKey, ParticleTypes.CODEC.encodeStart(NbtOps.INSTANCE, particle).getOrThrow());
++        return cloudEgg(tag);
++    }
++
++    private static ItemStack cloudEgg(final CompoundTag tag) {
++        final ItemStack egg = new ItemStack(Items.ELDER_GUARDIAN_SPAWN_EGG);
++        egg.set(DataComponents.ENTITY_DATA, TypedEntityData.of(EntityTypes.AREA_EFFECT_CLOUD, tag));
++        return egg;
++    }
++
++    private static ItemStack cloudDataItem(final String particleKey, final ParticleOptions particle) {
++        final CompoundTag tag = new CompoundTag();
++        tag.put(particleKey, ParticleTypes.CODEC.encodeStart(NbtOps.INSTANCE, particle).getOrThrow());
++        return cloudDataItem(tag);
++    }
++
++    private static ItemStack cloudDataItem(final CompoundTag tag) {
++        final ItemStack item = new ItemStack(Items.STICK);
++        item.set(DataComponents.ENTITY_DATA, TypedEntityData.of(EntityTypes.AREA_EFFECT_CLOUD, tag));
++        return item;
++    }
++
++    private static CompoundTag entityData(final ItemStack stack) {
++        return stack.get(DataComponents.ENTITY_DATA).copyTagWithoutId();
++    }
++}

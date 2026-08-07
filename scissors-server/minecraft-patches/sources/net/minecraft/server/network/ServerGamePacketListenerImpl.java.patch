@@ -1,17 +1,41 @@
 --- a/net/minecraft/server/network/ServerGamePacketListenerImpl.java
 +++ b/net/minecraft/server/network/ServerGamePacketListenerImpl.java
-@@ -3484,11 +_,21 @@
+@@ -268,6 +_,7 @@
+     private static final Component CHAT_VALIDATION_FAILED = Component.translatable("multiplayer.disconnect.chat_validation_failed");
+     private static final Component INVALID_COMMAND_SIGNATURE = Component.translatable("chat.disabled.invalid_command_signature").withStyle(ChatFormatting.RED);
+     private static final int MAX_COMMAND_SUGGESTIONS = 1000;
++    private static final long UNSAFE_CREATIVE_ITEM_LOG_INTERVAL = TimeUnit.SECONDS.toMillis(1L); // Scissors - rate-limit exploit logging
+     public ServerPlayer player;
+     public final PlayerChunkSender chunkSender;
+     private int tickCount;
+@@ -277,6 +_,7 @@
+     private final TickThrottler commandSpamThrottler;
+     private final TickThrottler tabSpamThrottler = new TickThrottler(io.papermc.paper.configuration.GlobalConfiguration.get().spamLimiter.tabSpamIncrement, io.papermc.paper.configuration.GlobalConfiguration.get().spamLimiter.tabSpamLimit); // Paper - configurable tab spam limits
+     private final TickThrottler recipeSpamPackets = new TickThrottler(io.papermc.paper.configuration.GlobalConfiguration.get().spamLimiter.recipeSpamIncrement, io.papermc.paper.configuration.GlobalConfiguration.get().spamLimiter.recipeSpamLimit);
++    private long lastUnsafeCreativeItemWarning; // Scissors - rate-limit exploit logging
+     private double firstGoodX;
+     private double firstGoodY;
+     private double firstGoodZ;
+@@ -3485,11 +_,28 @@
              }
- 
+-
++
              boolean validSlot = packet.slotNum() >= 1 && packet.slotNum() <= 45;
-+            // Scissors start - eliminate invalid nested components from creative items; saved toolbars are client-side and bypass /give validation
-+            // Strip invalid bundle entries and fully reject items that are still invalid, so the crashing payload never enters the inventory.
++            // Scissors start - eliminate unsafe data from creative items; saved toolbars are client-side and bypass /give validation
++            // Strip known client-dangerous data and fully reject items that are still invalid, so exploit payloads never enter the inventory.
 +            // Track whether we altered the client's item: if we did, the client is holding a copy the server does not have and must be corrected below.
-+            ItemStack sanitizedItem = ItemStack.sanitizeNestedItems(itemStack);
++            ItemStack sanitizedItem = ItemStack.sanitizeUnsafeData(itemStack);
 +            if (!sanitizedItem.isEmpty() && ItemStack.validateStrict(sanitizedItem).isError()) {
 +                sanitizedItem = ItemStack.EMPTY;
 +            }
 +            boolean itemSanitized = !ItemStack.matches(sanitizedItem, itemStack);
++            if (itemSanitized) {
++                long now = Util.getMillis();
++                if (now - this.lastUnsafeCreativeItemWarning >= UNSAFE_CREATIVE_ITEM_LOG_INTERVAL) {
++                    this.lastUnsafeCreativeItemWarning = now;
++                    LOGGER.warn("Sanitized unsafe creative inventory item from {}", this.player.getScoreboardName());
++                }
++            }
 +            itemStack = sanitizedItem;
              boolean validData = itemStack.isEmpty() || itemStack.getCount() <= itemStack.getMaxStackSize();
 -            if (drop || (validSlot && !ItemStack.matches(this.player.inventoryMenu.getSlot(packet.slotNum()).getItem(), packet.itemStack()))) { // Insist on valid slot
@@ -21,10 +45,35 @@
                  org.bukkit.inventory.InventoryView inventory = this.player.inventoryMenu.getBukkitView();
 -                org.bukkit.inventory.ItemStack item = CraftItemStack.asBukkitCopy(packet.itemStack());
 +                org.bukkit.inventory.ItemStack item = CraftItemStack.asBukkitCopy(itemStack); // Scissors - use the sanitized item
- 
+-
++
                  SlotType type = SlotType.QUICKBAR;
                  if (drop) {
-@@ -3535,6 +_,19 @@
+@@ -3505,6 +_,21 @@
+                 this.cserver.getPluginManager().callEvent(event);
+-
++
+                 itemStack = CraftItemStack.asNMSCopy(event.getCursor());
++                // A plugin may replace the cursor during the event. Treat that result as a fresh ingress value;
++                // event ALLOW may override normal inventory policy, but it must never override exploit sanitation.
++                ItemStack sanitizedEventItem = ItemStack.sanitizeUnsafeData(itemStack);
++                if (!sanitizedEventItem.isEmpty() && ItemStack.validateStrict(sanitizedEventItem).isError()) {
++                    sanitizedEventItem = ItemStack.EMPTY;
++                }
++                if (!ItemStack.matches(sanitizedEventItem, itemStack)) {
++                    itemSanitized = true;
++                    long now = Util.getMillis();
++                    if (now - this.lastUnsafeCreativeItemWarning >= UNSAFE_CREATIVE_ITEM_LOG_INTERVAL) {
++                        this.lastUnsafeCreativeItemWarning = now;
++                        LOGGER.warn("Sanitized unsafe creative inventory event item for {}", this.player.getScoreboardName());
++                    }
++                }
++                itemStack = sanitizedEventItem;
+-
++
+                 switch (event.getResult()) {
+                     case ALLOW:
+@@ -3536,6 +_,19 @@
                      LOGGER.warn("Player {} was dropping items too fast in creative mode, ignoring.", this.player.getPlainTextName());
                  }
              }
@@ -43,4 +92,5 @@
 +            // Scissors end
          }
      }
- 
+-
++

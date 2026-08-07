@@ -1,0 +1,247 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Scissors <noreply@scissorsmc.github.io>
+Date: Fri, 7 Aug 2026 12:12:46 -0400
+Subject: [PATCH] Sanitize area effect cloud particles
+
+Area-effect clouds make clients construct particles proportional to squared radius before queue limits apply. Restrict clouds to vanilla particle implementations and bound radius, active duration, wait time, and loaded age so custom particles or long-lived clouds cannot create unbounded client work.
+
+diff --git a/net/minecraft/world/entity/AreaEffectCloud.java b/net/minecraft/world/entity/AreaEffectCloud.java
+index f03fa06c0ba56f7f5e1e45bc1568a490751efde3..792fa8e09ecfd244d289e1e12c5edc41895e0f0a 100644
+--- a/net/minecraft/world/entity/AreaEffectCloud.java
++++ b/net/minecraft/world/entity/AreaEffectCloud.java
+@@ -1,15 +1,20 @@
+ package net.minecraft.world.entity;
+
+ import com.google.common.collect.Maps;
++import com.mojang.logging.LogUtils;
+ import java.util.ArrayList;
+ import java.util.List;
+ import java.util.Map;
++import java.util.concurrent.TimeUnit;
++import java.util.concurrent.atomic.AtomicLong;
+ import net.minecraft.core.component.DataComponentGetter;
+ import net.minecraft.core.component.DataComponentType;
+ import net.minecraft.core.component.DataComponents;
+ import net.minecraft.core.particles.ColorParticleOption;
+ import net.minecraft.core.particles.ParticleOptions;
+ import net.minecraft.core.particles.ParticleTypes;
++import net.minecraft.core.particles.PowerParticleOption;
++import net.minecraft.core.registries.BuiltInRegistries;
+ import net.minecraft.network.syncher.EntityDataAccessor;
+ import net.minecraft.network.syncher.EntityDataSerializers;
+ import net.minecraft.network.syncher.SynchedEntityData;
+@@ -24,13 +29,17 @@ import net.minecraft.world.level.material.PushReaction;
+ import net.minecraft.world.level.storage.ValueInput;
+ import net.minecraft.world.level.storage.ValueOutput;
+ import org.jspecify.annotations.Nullable;
++import org.slf4j.Logger;
+
+ public class AreaEffectCloud extends Entity implements TraceableEntity {
++    private static final Logger LOGGER = LogUtils.getLogger();
++    private static final AtomicLong NEXT_UNSAFE_DATA_WARNING_NANOS = new AtomicLong();
+     private static final int TIME_BETWEEN_APPLICATIONS = 5;
+     private static final EntityDataAccessor<Float> DATA_RADIUS = SynchedEntityData.defineId(AreaEffectCloud.class, EntityDataSerializers.FLOAT);
+     private static final EntityDataAccessor<Boolean> DATA_WAITING = SynchedEntityData.defineId(AreaEffectCloud.class, EntityDataSerializers.BOOLEAN);
+     private static final EntityDataAccessor<ParticleOptions> DATA_PARTICLE = SynchedEntityData.defineId(AreaEffectCloud.class, EntityDataSerializers.PARTICLE);
+     private static final float MAX_RADIUS = 32.0F;
++    private static final float SCISSORS_MAX_SAFE_RADIUS = 7.0F;
+     private static final int DEFAULT_AGE = 0;
+     private static final int DEFAULT_DURATION_ON_USE = 0;
+     private static final float DEFAULT_RADIUS_ON_USE = 0.0F;
+@@ -42,6 +51,9 @@ public class AreaEffectCloud extends Entity implements TraceableEntity {
+     public static final float HEIGHT = 0.5F;
+     public static final int INFINITE_DURATION = -1;
+     public static final int DEFAULT_LINGERING_DURATION = 600;
++    private static final int SCISSORS_MAX_SAFE_DURATION = DEFAULT_LINGERING_DURATION;
++    private static final int SCISSORS_MAX_SAFE_WAIT_TIME = 20;
++    private static final int SCISSORS_MAX_SAFE_AGE = SCISSORS_MAX_SAFE_WAIT_TIME + SCISSORS_MAX_SAFE_DURATION;
+     private static final int DEFAULT_WAIT_TIME = 20;
+     private static final int DEFAULT_REAPPLICATION_DELAY = 20;
+     private static final ColorParticleOption DEFAULT_PARTICLE = ColorParticleOption.create(ParticleTypes.ENTITY_EFFECT, -1);
+@@ -49,7 +61,7 @@ public class AreaEffectCloud extends Entity implements TraceableEntity {
+     private PotionContents potionContents = PotionContents.EMPTY;
+     private float potionDurationScale = 1.0F;
+     private final Map<Entity, Integer> victims = Maps.newHashMap();
+-    private int duration = -1;
++    private int duration = DEFAULT_LINGERING_DURATION;
+     private int waitTime = 20;
+     public int reapplicationDelay = 20;
+     private int durationOnUse = 0;
+@@ -76,7 +88,11 @@ public class AreaEffectCloud extends Entity implements TraceableEntity {
+
+     public void setRadius(final float radius) {
+         if (!this.level().isClientSide()) {
+-            this.getEntityData().set(DATA_RADIUS, Mth.clamp(radius, 0.0F, 32.0F));
++            float sanitizedRadius = sanitizeRadius(radius);
++            if (Float.compare(radius, sanitizedRadius) != 0) {
++                this.warnUnsafeData("radius", radius, sanitizedRadius);
++            }
++            this.getEntityData().set(DATA_RADIUS, sanitizedRadius);
+         }
+     }
+
+@@ -99,10 +115,66 @@ public class AreaEffectCloud extends Entity implements TraceableEntity {
+     }
+
+     public void setCustomParticle(final @Nullable ParticleOptions customParticle) {
+-        this.customParticle = customParticle;
++        // Scissors start - only allow the two particle implementations vanilla deliberately uses for clouds
++        ParticleOptions sanitizedParticle = customParticle;
++        if (!isParticleSafeForCloud(customParticle)) {
++            sanitizedParticle = null;
++            if (!this.level().isClientSide()) {
++                long now = System.nanoTime();
++                long nextWarning = NEXT_UNSAFE_DATA_WARNING_NANOS.get();
++                if (now >= nextWarning
++                    && NEXT_UNSAFE_DATA_WARNING_NANOS.compareAndSet(nextWarning, now + TimeUnit.SECONDS.toNanos(10L))) {
++                    LOGGER.warn(
++                        "Discarded unsafe area effect cloud particle {} at {}; arbitrary particle implementations cannot be amplified by clouds",
++                        BuiltInRegistries.PARTICLE_TYPE.getKey(customParticle.getType()),
++                        this.blockPosition().toShortString()
++                    );
++                }
++            }
++        }
++        this.customParticle = sanitizedParticle;
+         this.updateParticle();
+     }
+
++    // The client constructs every requested particle before applying its queue limits. An allowlist is required:
++    // properties such as ParticleType#overrideLimiter do not describe provider construction or emitter fan-out cost.
++    public static boolean isParticleSafeForCloud(final @Nullable ParticleOptions particle) {
++        if (particle == null || particle instanceof ColorParticleOption && particle.getType() == ParticleTypes.ENTITY_EFFECT) {
++            return true;
++        }
++        return particle instanceof PowerParticleOption power
++            && particle.getType() == ParticleTypes.DRAGON_BREATH
++            && Float.compare(power.getPower(), 1.0F) == 0;
++    }
++
++    public static float sanitizeRadius(final float radius) {
++        return Float.isFinite(radius) ? Mth.clamp(radius, 0.0F, SCISSORS_MAX_SAFE_RADIUS) : DEFAULT_RADIUS;
++    }
++
++    public static int sanitizeDuration(final int duration) {
++        if (duration == INFINITE_DURATION) {
++            return SCISSORS_MAX_SAFE_DURATION;
++        }
++        return Mth.clamp(duration, 0, SCISSORS_MAX_SAFE_DURATION);
++    }
++
++    public static int sanitizeWaitTime(final int waitTime) {
++        return Mth.clamp(waitTime, 0, SCISSORS_MAX_SAFE_WAIT_TIME);
++    }
++
++    public static int sanitizeAge(final int age) {
++        return Mth.clamp(age, 0, SCISSORS_MAX_SAFE_AGE);
++    }
++
++    private void warnUnsafeData(final String field, final Object original, final Object replacement) {
++        long now = System.nanoTime();
++        long nextWarning = NEXT_UNSAFE_DATA_WARNING_NANOS.get();
++        if (now >= nextWarning && NEXT_UNSAFE_DATA_WARNING_NANOS.compareAndSet(nextWarning, now + TimeUnit.SECONDS.toNanos(10L))) {
++            LOGGER.warn("Sanitized unsafe area effect cloud {} from {} to {} at {}", field, original, replacement, this.blockPosition().toShortString());
++        }
++    }
++    // Scissors end - bound the particle work generated by an area effect cloud
++
+     public void setPotionDurationScale(final float scale) {
+         this.potionDurationScale = scale;
+     }
+@@ -137,14 +209,18 @@ public class AreaEffectCloud extends Entity implements TraceableEntity {
+     }
+
+     public void setDuration(final int duration) {
+-        this.duration = duration;
++        int sanitizedDuration = sanitizeDuration(duration);
++        if (duration != sanitizedDuration && !this.level().isClientSide()) {
++            this.warnUnsafeData("duration", duration, sanitizedDuration);
++        }
++        this.duration = sanitizedDuration;
+     }
+
+     // Paper start - EAR 2
+     @Override
+     public void inactiveTick() {
+         super.inactiveTick();
+-        if (this.duration != INFINITE_DURATION && this.tickCount - this.waitTime >= this.duration) {
++        if ((long)this.tickCount - this.waitTime >= this.duration) {
+             this.discard(org.bukkit.event.entity.EntityRemoveEvent.Cause.DESPAWN); // CraftBukkit - add Bukkit remove cause
+         }
+     }
+@@ -198,7 +274,7 @@ public class AreaEffectCloud extends Entity implements TraceableEntity {
+     }
+
+     private void serverTick(final ServerLevel serverLevel) {
+-        if (this.duration != -1 && this.tickCount - this.waitTime >= this.duration) {
++        if ((long)this.tickCount - this.waitTime >= this.duration) {
+             this.discard(org.bukkit.event.entity.EntityRemoveEvent.Cause.DESPAWN); // CraftBukkit - add Bukkit remove cause
+         } else {
+             boolean isWaiting = this.isWaiting();
+@@ -268,12 +344,13 @@ public class AreaEffectCloud extends Entity implements TraceableEntity {
+                                             this.setRadius(radius);
+                                         }
+
+-                                        if (this.durationOnUse != 0 && this.duration != -1) {
+-                                            this.duration = this.duration + this.durationOnUse;
+-                                            if (this.duration <= 0) {
++                                        if (this.durationOnUse != 0) {
++                                            long adjustedDuration = (long)this.duration + this.durationOnUse;
++                                            if (adjustedDuration <= 0L) {
+                                                 this.discard(org.bukkit.event.entity.EntityRemoveEvent.Cause.DESPAWN); // CraftBukkit - add Bukkit remove cause
+                                                 return;
+                                             }
++                                            this.setDuration((int)Math.min(adjustedDuration, Integer.MAX_VALUE));
+                                         }
+                                     }
+                                 }
+@@ -314,7 +391,11 @@ public class AreaEffectCloud extends Entity implements TraceableEntity {
+     }
+
+     public void setWaitTime(final int waitTime) {
+-        this.waitTime = waitTime;
++        int sanitizedWaitTime = sanitizeWaitTime(waitTime);
++        if (waitTime != sanitizedWaitTime && !this.level().isClientSide()) {
++            this.warnUnsafeData("wait time", waitTime, sanitizedWaitTime);
++        }
++        this.waitTime = sanitizedWaitTime;
+     }
+
+     public void setOwner(final @Nullable LivingEntity owner) {
+@@ -328,9 +409,9 @@ public class AreaEffectCloud extends Entity implements TraceableEntity {
+
+     @Override
+     protected void readAdditionalSaveData(final ValueInput input) {
+-        this.tickCount = input.getIntOr("Age", 0);
+-        this.duration = input.getIntOr("Duration", -1);
+-        this.waitTime = input.getIntOr("WaitTime", 20);
++        this.tickCount = sanitizeAge(input.getIntOr("Age", 0));
++        this.setDuration(input.getIntOr("Duration", INFINITE_DURATION));
++        this.setWaitTime(input.getIntOr("WaitTime", 20));
+         this.reapplicationDelay = input.getIntOr("ReapplicationDelay", 20);
+         this.durationOnUse = input.getIntOr("DurationOnUse", 0);
+         this.radiusOnUse = input.getFloatOr("RadiusOnUse", 0.0F);
+@@ -365,6 +446,23 @@ public class AreaEffectCloud extends Entity implements TraceableEntity {
+
+     @Override
+     public void onSyncedDataUpdated(final EntityDataAccessor<?> accessor) {
++        // Scissors start - keep the invariant even if trusted NMS code writes the data watcher directly
++        if (!this.level().isClientSide()) {
++            if (DATA_RADIUS.equals(accessor)) {
++                float radius = this.getRadius();
++                if (Float.compare(radius, sanitizeRadius(radius)) != 0) {
++                    this.setRadius(radius);
++                    return;
++                }
++            } else if (DATA_PARTICLE.equals(accessor)) {
++                ParticleOptions particle = this.getParticle();
++                if (!isParticleSafeForCloud(particle)) {
++                    this.setCustomParticle(particle);
++                    return;
++                }
++            }
++        }
++        // Scissors end - keep the invariant even if trusted NMS code writes the data watcher directly
+         if (DATA_RADIUS.equals(accessor)) {
+             this.refreshDimensions();
+         }

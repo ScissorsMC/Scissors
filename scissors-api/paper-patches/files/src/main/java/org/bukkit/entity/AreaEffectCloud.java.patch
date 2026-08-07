@@ -1,0 +1,63 @@
+--- a/src/main/java/org/bukkit/entity/AreaEffectCloud.java
++++ b/src/main/java/org/bukkit/entity/AreaEffectCloud.java
+@@ -20,14 +_,15 @@
+     /**
+      * Gets the duration which this cloud will exist for (in ticks).
+      *
+-     * @return cloud duration or {@link PotionEffect#INFINITE_DURATION} for no duration
++     * @return cloud duration, from 0 through 600 ticks
+      */
+     int getDuration();
+-
++
+     /**
+      * Sets the duration which this cloud will exist for (in ticks).
+      *
+-     * @param duration cloud duration or {@link PotionEffect#INFINITE_DURATION} for no duration
++     * @apiNote Scissors limits cloud lifetime to 600 ticks. Infinite duration is converted to that limit.
++     * @param duration cloud duration, clamped to the safe range from 0 through 600 ticks
+      */
+     void setDuration(int duration);
+-
++
+@@ -43,7 +_,8 @@
+      * Sets the time which an entity has to be exposed to the cloud before the
+      * effect is applied.
+      *
+-     * @param waitTime wait time
++     * @apiNote Scissors limits wait time so it cannot extend a cloud's lifetime indefinitely.
++     * @param waitTime wait time, clamped to the safe range from 0 through 20 ticks
+      */
+     void setWaitTime(int waitTime);
+-
++
+@@ -87,7 +_,8 @@
+     /**
+      * Sets the initial radius of the cloud.
+      *
+-     * @param radius radius
++     * @apiNote Scissors limits the radius to 7 blocks, the largest radius used by a vanilla cloud.
++     * @param radius radius, clamped to the safe range from 0 through 7 blocks
+      */
+     void setRadius(float radius);
+-
++
+@@ -132,6 +_,8 @@
+     /**
+      * Sets the particle which this cloud will be composed of
+      *
++     * @apiNote Scissors permits only {@link Particle#ENTITY_EFFECT} and canonical
++     *     {@link Particle#DRAGON_BREATH} cloud particles. Other particles fall back to the potion color particle.
+      * @param particle the new particle type
+      */
+     void setParticle(@NotNull Particle particle);
+@@ -139,6 +_,9 @@
+     /**
+      * Sets the particle which this cloud will be composed of
+      *
++     * @apiNote Scissors permits only {@link Particle#ENTITY_EFFECT} and canonical
++     *     {@link Particle#DRAGON_BREATH} cloud particles. Other particles or unsafe particle data fall back to the
++     *     potion color particle.
+      * @param <T> type of particle data (see {@link Particle#getDataType()})
+      * @param particle the new particle type
+      * @param data the data to use for the particle or null,

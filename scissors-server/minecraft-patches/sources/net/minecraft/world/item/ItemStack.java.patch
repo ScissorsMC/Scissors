@@ -1,5 +1,14 @@
 --- a/net/minecraft/world/item/ItemStack.java
 +++ b/net/minecraft/world/item/ItemStack.java
+@@ -12,6 +_,8 @@
+ import java.util.List;
+ import java.util.Objects;
+ import java.util.Optional;
++import java.util.concurrent.TimeUnit;
++import java.util.concurrent.atomic.AtomicLong;
+ import java.util.function.BiConsumer;
+ import java.util.function.BiFunction;
+ import java.util.function.Consumer;
 @@ -115,7 +_,16 @@
                      ExtraCodecs.optionalAlwaysPresentFieldOf(ExtraCodecs.intRange(1, 99), "count", 1).forGetter(ItemStack::getCount),
                      DataComponentPatch.CODEC.optionalFieldOf("components", DataComponentPatch.EMPTY).forGetter(s -> s.components.asPatch())
@@ -8,9 +17,9 @@
 +                // Scissors start - eliminate invalid nested items when a stack is deserialized
 +                .apply(i, (item, count, patch) -> {
 +                    ItemStack decoded = new ItemStack(item, count, patch);
-+                    ItemStack sanitized = sanitizeNestedItems(decoded);
++                    ItemStack sanitized = sanitizeUnsafeData(decoded);
 +                    if (sanitized != decoded) {
-+                        ItemStack.LOGGER.warn("Removed invalid nested items from {} while loading it", item.getRegisteredName());
++                        ItemStack.LOGGER.warn("Removed unsafe data from {} while loading it", item.getRegisteredName());
 +                    }
 +                    return sanitized;
 +                })
@@ -18,26 +27,36 @@
          )
      );
      public static final Codec<ItemStack> CODEC = Codec.lazyInitialized(MAP_CODEC::codec);
+@@ -149,6 +_,7 @@
+         ByteBufCodecs.collection(NonNullList::createWithCapacity)
+     );
+     private static final Logger LOGGER = LogUtils.getLogger();
++    private static final AtomicLong NEXT_UNSAFE_CLOUD_ITEM_WARNING_NANOS = new AtomicLong();
+     public static final ItemStack EMPTY = new ItemStack((Void)null);
+     private static final Component DISABLED_ITEM_TOOLTIP = Component.translatable("item.disabled").withStyle(ChatFormatting.RED);
+     private int count;
 @@ -195,7 +_,7 @@
                      boolean prev = net.minecraft.network.chat.ComponentSerialization.DONT_RENDER_TRANSLATABLES.get();
                      try (final io.papermc.paper.util.SafeAutoClosable ignored = io.papermc.paper.util.sanitizer.ItemObfuscationSession.withContext(c -> c.itemStack(itemStack))) { // pass the itemstack as context to the obfuscation session
                          net.minecraft.network.chat.ComponentSerialization.DONT_RENDER_TRANSLATABLES.set(true);
 -                    patchCodec.encode(output, itemStack.components.asPatch());
-+                    patchCodec.encode(output, sanitizeNestedItems(itemStack).components.asPatch()); // Scissors - eliminate invalid nested items before they reach clients
++                    patchCodec.encode(output, sanitizeUnsafeData(itemStack).components.asPatch()); // Scissors - eliminate unsafe item data before it reaches clients
                      } finally {
                          net.minecraft.network.chat.ComponentSerialization.DONT_RENDER_TRANSLATABLES.set(prev);
                      }
 @@ -281,14 +_,14 @@
          this.components = new PatchedDataComponentMap(DataComponentMap.EMPTY);
      }
- 
+-
++
 -    private static DataResult<?> validateComponents(final DataComponentMap components) {
 -        if (components.has(DataComponents.MAX_DAMAGE) && components.getOrDefault(DataComponents.MAX_STACK_SIZE, 1) > 1) {
 +    private static DataResult<?> validateComponents(final DataComponentGetter components) {
 +        if (components.get(DataComponents.MAX_DAMAGE) != null && components.getOrDefault(DataComponents.MAX_STACK_SIZE, 1) > 1) {
              return DataResult.error(() -> "Item cannot be both damageable and stackable");
          }
- 
+-
++
          ItemContainerContents container = components.get(DataComponents.CONTAINER);
          if (container != null) {
 -            DataResult<?> validationContents = validateContainedItemSizes(container.nonEmptyItems());
@@ -46,7 +65,8 @@
                  return validationContents;
              }
 @@ -296,7 +_,7 @@
- 
+-
++
          BundleContents bundle = components.get(DataComponents.BUNDLE_CONTENTS);
          if (bundle != null) {
 -            DataResult<?> validationResult = validateContainedItemSizes(bundle.items());
@@ -55,7 +75,8 @@
                  return validationResult;
              }
 @@ -309,7 +_,7 @@
- 
+-
++
          ChargedProjectiles chargedProjectiles = components.get(DataComponents.CHARGED_PROJECTILES);
          if (chargedProjectiles != null) {
 -            DataResult<?> validationResult = validateContainedItemSizes(chargedProjectiles.items());
@@ -66,7 +87,8 @@
 @@ -318,8 +_,13 @@
          return DataResult.success(Unit.INSTANCE);
      }
- 
+-
++
 -    private static DataResult<?> validateContainedItemSizes(final Iterable<? extends ItemInstance> items) {
 +    private static DataResult<?> validateContainedItems(final Iterable<? extends ItemInstance> items) {
          for (ItemInstance item : items) {
@@ -78,12 +100,13 @@
              int itemCount = item.count();
              int maxStackSize = item.getMaxStackSize();
              if (itemCount > maxStackSize) {
-@@ -329,6 +_,93 @@
- 
+@@ -329,6 +_,248 @@
+-
++
          return DataResult.success(Unit.INSTANCE);
      }
 +
-+    // Scissors start - eliminate invalid nested items before they reach clients
++    // Scissors start - eliminate unsafe item data before it reaches clients
 +    /**
 +     * Returns a copy of the stack whose nested-item components ({@code container}, {@code bundle_contents}, and
 +     * {@code charged_projectiles}) omit any entry that fails contained-item validation. These are exactly the
@@ -92,8 +115,8 @@
 +     *
 +     * <p>The vanilla client turns an invalid bundle entry into an empty stack and then crashes in
 +     * {@code BundleContents$Mutable#toImmutable} when the bundle is hovered; the other two components carry the same
-+     * kind of payload and must never be sent to a client either. Because {@code validateComponents} is itself
-+     * recursive, a surviving entry is a fully valid subtree, so no manual recursion is needed here.
++     * kind of payload and must never be sent to a client either. Surviving entries are also passed through
++     * {@link #sanitizeUnsafeData} recursively so valid-but-dangerous semantic data cannot hide in a nested carrier.
 +     *
 +     * <p>Returns the same instance when nothing needs to be removed, so this is cheap on the common path.
 +     */
@@ -130,45 +153,201 @@
 +        return result;
 +    }
 +
++    /**
++     * Eliminates every known client-dangerous item payload. This is used for storage decode, creative ingress, and
++     * the final client-bound item encoding chokepoint.
++     */
++    public static ItemStack sanitizeUnsafeData(final ItemStack itemStack) {
++        ItemStack result = sanitizeNestedItems(itemStack);
++        TypedEntityData<net.minecraft.world.entity.EntityType<?>> entityData = result.get(DataComponents.ENTITY_DATA);
++
++        // There is no vanilla area-effect-cloud spawn egg. Restore the concrete egg's registered entity rather than
++        // retaining a no-cooldown cloud spawner which can defeat per-cloud work limits by creating a swarm.
++        if (entityData != null && entityData.type() == net.minecraft.world.entity.EntityTypes.AREA_EFFECT_CLOUD && result.getItem() instanceof SpawnEggItem) {
++            TypedEntityData<net.minecraft.world.entity.EntityType<?>> defaultEntityData = result.getItem().components().get(DataComponents.ENTITY_DATA);
++            if (defaultEntityData != null && defaultEntityData.type() != net.minecraft.world.entity.EntityTypes.AREA_EFFECT_CLOUD) {
++                if (result == itemStack) {
++                    result = itemStack.copy();
++                }
++                result.set(DataComponents.ENTITY_DATA, defaultEntityData);
++                warnUnsafeCloudSpawnEggData(result, defaultEntityData.type());
++                return result;
++            }
++        }
++
++        if (entityData == null || entityData.type() != net.minecraft.world.entity.EntityTypes.AREA_EFFECT_CLOUD) {
++            return result;
++        }
++
++        net.minecraft.nbt.CompoundTag tag = entityData.copyTagWithoutId();
++        boolean changed = removeUnsafeAreaEffectCloudParticle(tag, "custom_particle");
++        // Some saved toolbars carry the older spelling alongside the current field. It is inert in this version,
++        // but remove the same payload rather than preserving a route for another loader or data conversion path.
++        changed |= removeUnsafeAreaEffectCloudParticle(tag, "Particle");
++        changed |= sanitizeAreaEffectCloudRadius(tag);
++        changed |= sanitizeAreaEffectCloudDuration(tag);
++        changed |= sanitizeAreaEffectCloudAge(tag);
++        changed |= sanitizeAreaEffectCloudWaitTime(tag);
++        if (!changed) {
++            return result;
++        }
++
++        if (result == itemStack) {
++            result = itemStack.copy();
++        }
++        result.set(DataComponents.ENTITY_DATA, TypedEntityData.of(entityData.type(), tag));
++        warnUnsafeCloudItemData(result);
++        return result;
++    }
++
++    private static boolean removeUnsafeAreaEffectCloudParticle(final net.minecraft.nbt.CompoundTag entityData, final String key) {
++        net.minecraft.nbt.Tag particleTag = entityData.get(key);
++        if (particleTag == null) {
++            return false;
++        }
++
++        Optional<net.minecraft.core.particles.ParticleOptions> particle = net.minecraft.core.particles.ParticleTypes.CODEC
++            .parse(net.minecraft.nbt.NbtOps.INSTANCE, particleTag)
++            .result();
++        if (particle.isEmpty() || !net.minecraft.world.entity.AreaEffectCloud.isParticleSafeForCloud(particle.get())) {
++            entityData.remove(key);
++            return true;
++        }
++        return false;
++    }
++
++    private static boolean sanitizeAreaEffectCloudRadius(final net.minecraft.nbt.CompoundTag entityData) {
++        if (!entityData.contains("Radius")) {
++            return false;
++        }
++        Optional<Float> parsedRadius = entityData.getFloat("Radius");
++        if (parsedRadius.isEmpty()) {
++            entityData.putFloat("Radius", 3.0F);
++            return true;
++        }
++        float radius = parsedRadius.get();
++        float sanitizedRadius = net.minecraft.world.entity.AreaEffectCloud.sanitizeRadius(radius);
++        if (Float.compare(radius, sanitizedRadius) == 0) {
++            return false;
++        }
++        entityData.putFloat("Radius", sanitizedRadius);
++        return true;
++    }
++
++    private static boolean sanitizeAreaEffectCloudDuration(final net.minecraft.nbt.CompoundTag entityData) {
++        if (!entityData.contains("Duration")) {
++            return false;
++        }
++        int duration = entityData.getInt("Duration").orElse(net.minecraft.world.entity.AreaEffectCloud.INFINITE_DURATION);
++        int sanitizedDuration = net.minecraft.world.entity.AreaEffectCloud.sanitizeDuration(duration);
++        if (duration == sanitizedDuration) {
++            return false;
++        }
++        entityData.putInt("Duration", sanitizedDuration);
++        return true;
++    }
++
++    private static boolean sanitizeAreaEffectCloudAge(final net.minecraft.nbt.CompoundTag entityData) {
++        if (!entityData.contains("Age")) {
++            return false;
++        }
++        Optional<Integer> parsedAge = entityData.getInt("Age");
++        int age = parsedAge.orElse(0);
++        int sanitizedAge = net.minecraft.world.entity.AreaEffectCloud.sanitizeAge(age);
++        if (parsedAge.isPresent() && age == sanitizedAge) {
++            return false;
++        }
++        entityData.putInt("Age", sanitizedAge);
++        return true;
++    }
++
++    private static boolean sanitizeAreaEffectCloudWaitTime(final net.minecraft.nbt.CompoundTag entityData) {
++        if (!entityData.contains("WaitTime")) {
++            return false;
++        }
++        Optional<Integer> parsedWaitTime = entityData.getInt("WaitTime");
++        int waitTime = parsedWaitTime.orElse(20);
++        int sanitizedWaitTime = net.minecraft.world.entity.AreaEffectCloud.sanitizeWaitTime(waitTime);
++        if (parsedWaitTime.isPresent() && waitTime == sanitizedWaitTime) {
++            return false;
++        }
++        entityData.putInt("WaitTime", sanitizedWaitTime);
++        return true;
++    }
++
++    private static void warnUnsafeCloudItemData(final ItemStack stack) {
++        long now = System.nanoTime();
++        long nextWarning = NEXT_UNSAFE_CLOUD_ITEM_WARNING_NANOS.get();
++        if (now >= nextWarning && NEXT_UNSAFE_CLOUD_ITEM_WARNING_NANOS.compareAndSet(nextWarning, now + TimeUnit.SECONDS.toNanos(10L))) {
++            LOGGER.warn(
++                "Sanitized area effect cloud data on {}: only canonical entity_effect/dragon_breath particles, radius <= 7, duration <= 600, and wait time <= 20 are permitted",
++                BuiltInRegistries.ITEM.getKey(stack.getItem())
++            );
++        }
++    }
++
++    private static void warnUnsafeCloudSpawnEggData(final ItemStack stack, final net.minecraft.world.entity.EntityType<?> restoredType) {
++        long now = System.nanoTime();
++        long nextWarning = NEXT_UNSAFE_CLOUD_ITEM_WARNING_NANOS.get();
++        if (now >= nextWarning && NEXT_UNSAFE_CLOUD_ITEM_WARNING_NANOS.compareAndSet(nextWarning, now + TimeUnit.SECONDS.toNanos(10L))) {
++            LOGGER.warn(
++                "Removed area effect cloud override from {} and restored entity type {}; area effect clouds cannot be supplied through repeat-use spawn eggs",
++                BuiltInRegistries.ITEM.getKey(stack.getItem()),
++                BuiltInRegistries.ENTITY_TYPE.getKey(restoredType)
++            );
++        }
++    }
++
 +    private static boolean isValidNestedItem(final ItemStackTemplate item) {
 +        return !validateComponents(item).isError() && item.count() <= item.getMaxStackSize();
 +    }
 +
-+    // Returns a filtered copy with invalid entries dropped, or null when every entry is already valid.
++    // Returns a sanitized copy with invalid entries dropped, or null when every entry is already safe.
 +    private static @Nullable List<ItemStackTemplate> filterValidNestedItems(final List<ItemStackTemplate> items) {
 +        List<ItemStackTemplate> valid = null;
 +        for (int i = 0; i < items.size(); i++) {
 +            ItemStackTemplate item = items.get(i);
 +            boolean ok = isValidNestedItem(item);
-+            if (!ok && valid == null) {
++            ItemStackTemplate sanitized = ok ? sanitizeNestedItem(item) : null;
++            if ((!ok || sanitized != item) && valid == null) {
 +                valid = new java.util.ArrayList<>(items.subList(0, i));
-+            } else if (ok && valid != null) {
-+                valid.add(item);
++            }
++            if (sanitized != null && valid != null) {
++                valid.add(sanitized);
 +            }
 +        }
 +        return valid;
 +    }
 +
-+    // Returns a rebuilt container with invalid slots cleared, or null when every occupied slot is already valid.
++    private static @Nullable ItemStackTemplate sanitizeNestedItem(final ItemStackTemplate item) {
++        ItemStack created = item.create();
++        ItemStack sanitized = sanitizeUnsafeData(created);
++        return sanitized == created ? item : ItemStackTemplate.fromNonEmptyStack(sanitized);
++    }
++
++    // Returns a rebuilt container with invalid slots cleared and unsafe slots sanitized, or null when unchanged.
 +    private static @Nullable ItemContainerContents filterValidContainer(final ItemContainerContents container) {
 +        List<Optional<ItemStackTemplate>> slots = container.items;
 +        List<ItemStack> rebuilt = null;
 +        for (int i = 0; i < slots.size(); i++) {
 +            Optional<ItemStackTemplate> slot = slots.get(i);
 +            boolean ok = slot.isEmpty() || isValidNestedItem(slot.get());
-+            if (!ok && rebuilt == null) {
++            ItemStack original = ok ? slot.map(ItemStackTemplate::create).orElse(ItemStack.EMPTY) : ItemStack.EMPTY;
++            ItemStack sanitized = original.isEmpty() ? original : sanitizeUnsafeData(original);
++            if ((!ok || sanitized != original) && rebuilt == null) {
 +                rebuilt = new java.util.ArrayList<>();
 +                for (int j = 0; j < i; j++) {
 +                    rebuilt.add(slots.get(j).map(ItemStackTemplate::create).orElse(ItemStack.EMPTY));
 +                }
-+                rebuilt.add(ItemStack.EMPTY);
-+            } else if (rebuilt != null) {
-+                rebuilt.add(ok ? slot.map(ItemStackTemplate::create).orElse(ItemStack.EMPTY) : ItemStack.EMPTY);
++            }
++            if (rebuilt != null) {
++                rebuilt.add(sanitized);
 +            }
 +        }
 +        return rebuilt == null ? null : ItemContainerContents.fromItems(rebuilt);
 +    }
-+    // Scissors end - eliminate invalid nested items before they reach clients
- 
++    // Scissors end - eliminate unsafe item data before it reaches clients
+-
++
      public boolean isEmpty() {
          return this == EMPTY || this.item.value() == Items.AIR || this.count <= 0;
