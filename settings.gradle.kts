@@ -16,6 +16,11 @@ for (name in listOf("scissors-api", "scissors-server")) {
     file(name).mkdirs()
 }
 
+// Paper's API build now depends on its custom Checkstyle project. The paperweight patch directory below materializes
+// this upstream-owned project without renaming it to Scissors.
+include("paper-checkstyle")
+file("paper-checkstyle").mkdirs()
+
 // optionalInclude("test-plugin") // possibly include a test plugin for your fork.
 
 fun optionalInclude(name: String, op: (ProjectDescriptor.() -> Unit)? = null) {

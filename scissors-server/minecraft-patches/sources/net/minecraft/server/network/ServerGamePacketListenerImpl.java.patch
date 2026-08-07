@@ -18,8 +18,7 @@
      private double firstGoodZ;
 @@ -3485,11 +_,28 @@
              }
--
-+
+ 
              boolean validSlot = packet.slotNum() >= 1 && packet.slotNum() <= 45;
 +            // Scissors start - eliminate unsafe data from creative items; saved toolbars are client-side and bypass /give validation
 +            // Strip known client-dangerous data and fully reject items that are still invalid, so exploit payloads never enter the inventory.
@@ -45,14 +44,12 @@
                  org.bukkit.inventory.InventoryView inventory = this.player.inventoryMenu.getBukkitView();
 -                org.bukkit.inventory.ItemStack item = CraftItemStack.asBukkitCopy(packet.itemStack());
 +                org.bukkit.inventory.ItemStack item = CraftItemStack.asBukkitCopy(itemStack); // Scissors - use the sanitized item
--
-+
+ 
                  SlotType type = SlotType.QUICKBAR;
                  if (drop) {
 @@ -3505,6 +_,21 @@
                  this.cserver.getPluginManager().callEvent(event);
--
-+
+ 
                  itemStack = CraftItemStack.asNMSCopy(event.getCursor());
 +                // A plugin may replace the cursor during the event. Treat that result as a fresh ingress value;
 +                // event ALLOW may override normal inventory policy, but it must never override exploit sanitation.
@@ -69,8 +66,7 @@
 +                    }
 +                }
 +                itemStack = sanitizedEventItem;
--
-+
+ 
                  switch (event.getResult()) {
                      case ALLOW:
 @@ -3536,6 +_,19 @@
@@ -92,5 +88,4 @@
 +            // Scissors end
          }
      }
--
-+
+ 

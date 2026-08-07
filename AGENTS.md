@@ -85,6 +85,25 @@ not perform blanket Paper-to-Scissors replacements. Preserve upstream copyright,
 The Paper commit is pinned by `paperRef` in `gradle.properties`. Do not change it unless the task is specifically an
 upstream update.
 
+### Authoritative upstream source references
+
+Use public source before reverse-engineering or decompiling build tooling:
+
+- [Paper](https://github.com/PaperMC/Paper) is Scissors' sole code upstream. Resolve update behavior against the exact
+  `paperRef`, preferably through paperweight's local upstream checkout.
+- [paperweight](https://github.com/PaperMC/paperweight) is the authoritative source for patcher/core Gradle plugins,
+  task behavior, and DSL types. Check a locally cached matching sources JAR or the source revision for the configured
+  plugin version before inspecting bytecode.
+- [paperweight-examples](https://github.com/PaperMC/paperweight-examples) provides official fork examples, but it is
+  frequently behind current Paper/paperweight behavior. Treat it as a lead and revalidate every task name and pattern
+  against this repository's pinned versions.
+- [Folia](https://github.com/PaperMC/Folia) can provide a Paper-fork workflow example. It is not Scissors' upstream;
+  never copy its Paper pin or implementation as the answer to a Paper update without verifying the exact target Paper
+  source first.
+
+When source is already available in a checkout, a `-sources.jar`, or one of these official repositories, do not
+decompile the corresponding class or infer its behavior from another fork.
+
 ## Updating Paper
 
 Treat a Paper update as a patch rebase, not a dependency bump.
@@ -109,6 +128,10 @@ Treat a Paper update as a patch rebase, not a dependency bump.
       `applyOrMovePaperApiFilePatches` can move rejected API file patches aside for manual resolution.
 6. Regenerate the tracked patch sets with the full patch-regeneration sequence below. Review every regenerated patch;
    an upstream update must not silently absorb unrelated Paper changes into a Scissors patch.
+   When `mcVersion` changes to a new major version, or regeneration reorders, renames, adds, or drops patches, audit the
+   numbered reproduction mapping in `docs/PATCH-COVERAGE.md`. Renumber the procedure pages, links, Python generator
+   entries, direct-item lore, and written-book titles/lore/pages together so `docs/generate-payloads.py` never carries
+   stale patch numbers. Derive the mapping from the regenerated tracked patch sets; do not trust the previous order.
 7. Run `./gradlew applyAllPatches` again from the regenerated tracked state, then run `./gradlew build`,
    `git diff --check`, and `git diff`.
 

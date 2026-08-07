@@ -3,6 +3,7 @@
 - Recorded: 2026-08-07
 - Applies to: Minecraft 26.2
 - Paper: `a40947c0acc780cebf578c6ab0f38b6948c3f86e`
+- Revalidated after updating Paper to: `f5706462f8833a858fee5fe1bccc05b60c248922`
 - Revalidate after changing any version above
 
 ## Crash mechanism

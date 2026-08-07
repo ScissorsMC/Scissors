@@ -11,6 +11,8 @@ build
 /paper-server
 /scissors-api/build.gradle.kts
 /paper-api
+/paper-checkstyle
+/.checkstyle
 /paper-api-generator
 
 .idea/

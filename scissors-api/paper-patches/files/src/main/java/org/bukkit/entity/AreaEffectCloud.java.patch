@@ -8,8 +8,7 @@
 +     * @return cloud duration, from 0 through 600 ticks
       */
      int getDuration();
--
-+
+ 
      /**
       * Sets the duration which this cloud will exist for (in ticks).
       *
@@ -18,8 +17,7 @@
 +     * @param duration cloud duration, clamped to the safe range from 0 through 600 ticks
       */
      void setDuration(int duration);
--
-+
+ 
 @@ -43,7 +_,8 @@
       * Sets the time which an entity has to be exposed to the cloud before the
       * effect is applied.
@@ -29,8 +27,7 @@
 +     * @param waitTime wait time, clamped to the safe range from 0 through 20 ticks
       */
      void setWaitTime(int waitTime);
--
-+
+ 
 @@ -87,7 +_,8 @@
      /**
       * Sets the initial radius of the cloud.
@@ -40,8 +37,7 @@
 +     * @param radius radius, clamped to the safe range from 0 through 7 blocks
       */
      void setRadius(float radius);
--
-+
+ 
 @@ -132,6 +_,8 @@
      /**
       * Sets the particle which this cloud will be composed of

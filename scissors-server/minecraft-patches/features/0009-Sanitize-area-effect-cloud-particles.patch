@@ -11,7 +11,7 @@ index f03fa06c0ba56f7f5e1e45bc1568a490751efde3..792fa8e09ecfd244d289e1e12c5edc41
 +++ b/net/minecraft/world/entity/AreaEffectCloud.java
 @@ -1,15 +1,20 @@
  package net.minecraft.world.entity;
-
+ 
  import com.google.common.collect.Maps;
 +import com.mojang.logging.LogUtils;
  import java.util.ArrayList;
@@ -35,7 +35,7 @@ index f03fa06c0ba56f7f5e1e45bc1568a490751efde3..792fa8e09ecfd244d289e1e12c5edc41
  import net.minecraft.world.level.storage.ValueOutput;
  import org.jspecify.annotations.Nullable;
 +import org.slf4j.Logger;
-
+ 
  public class AreaEffectCloud extends Entity implements TraceableEntity {
 +    private static final Logger LOGGER = LogUtils.getLogger();
 +    private static final AtomicLong NEXT_UNSAFE_DATA_WARNING_NANOS = new AtomicLong();
@@ -68,7 +68,7 @@ index f03fa06c0ba56f7f5e1e45bc1568a490751efde3..792fa8e09ecfd244d289e1e12c5edc41
      public int reapplicationDelay = 20;
      private int durationOnUse = 0;
 @@ -76,7 +88,11 @@ public class AreaEffectCloud extends Entity implements TraceableEntity {
-
+ 
      public void setRadius(final float radius) {
          if (!this.level().isClientSide()) {
 -            this.getEntityData().set(DATA_RADIUS, Mth.clamp(radius, 0.0F, 32.0F));
@@ -79,10 +79,10 @@ index f03fa06c0ba56f7f5e1e45bc1568a490751efde3..792fa8e09ecfd244d289e1e12c5edc41
 +            this.getEntityData().set(DATA_RADIUS, sanitizedRadius);
          }
      }
-
+ 
 @@ -99,10 +115,66 @@ public class AreaEffectCloud extends Entity implements TraceableEntity {
      }
-
+ 
      public void setCustomParticle(final @Nullable ParticleOptions customParticle) {
 -        this.customParticle = customParticle;
 +        // Scissors start - only allow the two particle implementations vanilla deliberately uses for clouds
@@ -105,7 +105,7 @@ index f03fa06c0ba56f7f5e1e45bc1568a490751efde3..792fa8e09ecfd244d289e1e12c5edc41
 +        this.customParticle = sanitizedParticle;
          this.updateParticle();
      }
-
+ 
 +    // The client constructs every requested particle before applying its queue limits. An allowlist is required:
 +    // properties such as ParticleType#overrideLimiter do not describe provider construction or emitter fan-out cost.
 +    public static boolean isParticleSafeForCloud(final @Nullable ParticleOptions particle) {
@@ -150,7 +150,7 @@ index f03fa06c0ba56f7f5e1e45bc1568a490751efde3..792fa8e09ecfd244d289e1e12c5edc41
      }
 @@ -137,14 +209,18 @@ public class AreaEffectCloud extends Entity implements TraceableEntity {
      }
-
+ 
      public void setDuration(final int duration) {
 -        this.duration = duration;
 +        int sanitizedDuration = sanitizeDuration(duration);
@@ -159,7 +159,7 @@ index f03fa06c0ba56f7f5e1e45bc1568a490751efde3..792fa8e09ecfd244d289e1e12c5edc41
 +        }
 +        this.duration = sanitizedDuration;
      }
-
+ 
      // Paper start - EAR 2
      @Override
      public void inactiveTick() {
@@ -171,7 +171,7 @@ index f03fa06c0ba56f7f5e1e45bc1568a490751efde3..792fa8e09ecfd244d289e1e12c5edc41
      }
 @@ -198,7 +274,7 @@ public class AreaEffectCloud extends Entity implements TraceableEntity {
      }
-
+ 
      private void serverTick(final ServerLevel serverLevel) {
 -        if (this.duration != -1 && this.tickCount - this.waitTime >= this.duration) {
 +        if ((long)this.tickCount - this.waitTime >= this.duration) {
@@ -181,7 +181,7 @@ index f03fa06c0ba56f7f5e1e45bc1568a490751efde3..792fa8e09ecfd244d289e1e12c5edc41
 @@ -268,12 +344,13 @@ public class AreaEffectCloud extends Entity implements TraceableEntity {
                                              this.setRadius(radius);
                                          }
-
+ 
 -                                        if (this.durationOnUse != 0 && this.duration != -1) {
 -                                            this.duration = this.duration + this.durationOnUse;
 -                                            if (this.duration <= 0) {
@@ -197,7 +197,7 @@ index f03fa06c0ba56f7f5e1e45bc1568a490751efde3..792fa8e09ecfd244d289e1e12c5edc41
                                  }
 @@ -314,7 +391,11 @@ public class AreaEffectCloud extends Entity implements TraceableEntity {
      }
-
+ 
      public void setWaitTime(final int waitTime) {
 -        this.waitTime = waitTime;
 +        int sanitizedWaitTime = sanitizeWaitTime(waitTime);
@@ -206,10 +206,10 @@ index f03fa06c0ba56f7f5e1e45bc1568a490751efde3..792fa8e09ecfd244d289e1e12c5edc41
 +        }
 +        this.waitTime = sanitizedWaitTime;
      }
-
+ 
      public void setOwner(final @Nullable LivingEntity owner) {
 @@ -328,9 +409,9 @@ public class AreaEffectCloud extends Entity implements TraceableEntity {
-
+ 
      @Override
      protected void readAdditionalSaveData(final ValueInput input) {
 -        this.tickCount = input.getIntOr("Age", 0);
@@ -222,7 +222,7 @@ index f03fa06c0ba56f7f5e1e45bc1568a490751efde3..792fa8e09ecfd244d289e1e12c5edc41
          this.durationOnUse = input.getIntOr("DurationOnUse", 0);
          this.radiusOnUse = input.getFloatOr("RadiusOnUse", 0.0F);
 @@ -365,6 +446,23 @@ public class AreaEffectCloud extends Entity implements TraceableEntity {
-
+ 
      @Override
      public void onSyncedDataUpdated(final EntityDataAccessor<?> accessor) {
 +        // Scissors start - keep the invariant even if trusted NMS code writes the data watcher directly

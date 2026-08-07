@@ -25,7 +25,23 @@ paperweight {
             patchesDir = file("scissors-api/paper-patches")
             outputDir = file("paper-api")
         }
+        patchDir("paperCheckstyle") {
+            upstreamPath = "paper-checkstyle"
+            patchesDir = file("scissors-api/paper-checkstyle-patches")
+            outputDir = file("paper-checkstyle")
+        }
+        patchDir("paperCheckstyleConfig") {
+            upstreamPath = ".checkstyle"
+            patchesDir = file("scissors-api/paper-checkstyle-config-patches")
+            outputDir = file(".checkstyle")
+        }
     }
+}
+
+// Keep build output out of the generated upstream patch worktree so rebuilding its empty patch set never scans class
+// files or test results as candidate source changes.
+project(":paper-checkstyle") {
+    layout.buildDirectory = rootProject.layout.buildDirectory.dir("paper-checkstyle")
 }
 
 subprojects {
