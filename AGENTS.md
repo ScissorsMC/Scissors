@@ -128,10 +128,9 @@ Treat a Paper update as a patch rebase, not a dependency bump.
       `applyOrMovePaperApiFilePatches` can move rejected API file patches aside for manual resolution.
 6. Regenerate the tracked patch sets with the full patch-regeneration sequence below. Review every regenerated patch;
    an upstream update must not silently absorb unrelated Paper changes into a Scissors patch.
-   When `mcVersion` changes to a new major version, or regeneration reorders, renames, adds, or drops patches, audit the
-   numbered reproduction mapping in `docs/PATCH-COVERAGE.md`. Renumber the procedure pages, links, Python generator
-   entries, direct-item lore, and written-book titles/lore/pages together so `docs/generate-payloads.py` never carries
-   stale patch numbers. Derive the mapping from the regenerated tracked patch sets; do not trust the previous order.
+   When `mcVersion` changes to a new major version, or regeneration reorders, renames, adds, or drops patches, review
+   the complete regenerated patch sequence and its Scissors-owned regression coverage. Derive the sequence from the
+   tracked patch sets; do not trust the previous order.
 7. Run `./gradlew applyAllPatches` again from the regenerated tracked state, then run `./gradlew build`,
    `git diff --check`, and `git diff`.
 
