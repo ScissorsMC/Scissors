@@ -40,6 +40,22 @@ function Cfg([string]$key, $default) {
 
 $ApiUrl  = (Cfg 'ApiUrl' 'https://fill.scissors.gg').ToString().TrimEnd('/')
 $Project = Cfg 'ProjectKey' 'scissors'
+$NumbersUrl   = (Cfg 'BuildNumbersUrl' 'https://numbers.scissors.gg').ToString().TrimEnd('/')
+$NumbersToken = Cfg 'BuildNumbersToken' ''
+$TrackPrefix  = Cfg 'TrackPrefix' $Project
+
+# With a token configured, fetch the build-number tracks once so each version's
+# counter can be compared against its latest published build.
+$tracks = $null
+if ($NumbersToken) {
+    try {
+        $response = Invoke-RestMethod "$NumbersUrl/v1/tracks" -Headers @{ Authorization = "Bearer $NumbersToken" }
+        $tracks = @{}
+        foreach ($t in @($response.tracks)) { $tracks[$t.track] = [int]$t.number }
+    } catch {
+        Write-Host "WARNING: cannot reach $NumbersUrl/v1/tracks : $($_.Exception.Message)" -ForegroundColor Yellow
+    }
+}
 
 try {
     $info = Invoke-RestMethod "$ApiUrl/v3/projects/$Project"
@@ -83,6 +99,17 @@ foreach ($familyProp in $info.versions.PSObject.Properties) {
         Write-Host ("    latest: #{0}  {1}  {2}  {3} ({4} MB)" -f `
             $latest.id, $latest.channel, $latest.time, $download.name, $sizeMb)
         Write-Host "    $($download.url)" -ForegroundColor DarkGray
+
+        if ($null -ne $tracks) {
+            $trackName = "$TrackPrefix-$versionId"
+            if (-not $tracks.ContainsKey($trackName)) {
+                Write-Host "    track ${trackName}: MISSING - next CI publish would allocate 1 and collide; seed it with build-numbers.ps1" -ForegroundColor Red
+            } elseif ($tracks[$trackName] -lt [int]$latest.id) {
+                Write-Host "    track ${trackName}: $($tracks[$trackName]) is BEHIND latest build $($latest.id); next allocation would collide" -ForegroundColor Red
+            } else {
+                Write-Host "    track ${trackName}: $($tracks[$trackName]) (next: $($tracks[$trackName] + 1))" -ForegroundColor Green
+            }
+        }
 
         if ($CheckDownload) {
             try {

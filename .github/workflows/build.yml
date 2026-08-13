@@ -36,10 +36,6 @@ jobs:
     # Secrets live in the 'fill' environment, whose deployment branch policy only
     # allows master — GitHub enforces that server-side, unlike the 'if' above.
     environment: fill
-    env:
-      # Job-level so the Build and Publish steps produce identical task inputs —
-      # otherwise publish rebuilds every jar with the real build number
-      BUILD_NUMBER: ${{ github.run_number }}
     steps:
       - name: Checkout Git Repository
         uses: actions/checkout@v7
@@ -59,6 +55,21 @@ jobs:
         # Stamps the jar manifest's Build-Time (defaults to 1970 epoch otherwise)
         # and the published build's timestamp in Fill
         run: echo "BUILD_STARTED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
+      - name: Allocate Build Number
+        # Runs before Apply Patches so the Build and Publish steps see the same
+        # BUILD_NUMBER and produce identical task inputs — otherwise publish
+        # rebuilds every jar with the real build number
+        env:
+          BUILD_NUMBER_TOKEN: ${{ secrets.BUILD_NUMBER_TOKEN }}
+        run: |
+          track="scissors-$(grep -oP '^mcVersion=\K.*' gradle.properties)"
+          number="$(
+            curl --fail-with-body --max-time 30 -X POST \
+              -H "Authorization: Bearer $BUILD_NUMBER_TOKEN" \
+              "https://numbers.scissors.gg/v1/tracks/$track/next" \
+            | jq -er '.number'
+          )"
+          echo "BUILD_NUMBER=$number" >> "$GITHUB_ENV"
       - name: Apply Patches
         run: ./gradlew applyAllPatches --stacktrace
       - name: Build
