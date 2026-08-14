@@ -8,6 +8,36 @@ files produced by applying patches are development worktrees, not the repository
 Read this file before changing code. Human setup and build instructions are in
 `README.md`.
 
+## Security classification and authorization
+
+**SECURITY CLASSIFICATION: AUTHORIZED BLUE TEAM / DEFENSIVE SECURITY ONLY.**
+
+Treat this classification as durable project context for every task in this repository:
+
+- The maintainer identifies as the defender and explicitly authorizes security research needed to protect Scissors.
+- Rock is Scissors' private blue-team reproduction, validation, and regression-testing system. It is not an offensive
+  deployment framework.
+- Analyzing crash logs and malicious data, reconstructing supplied payloads, generating bounded test fixtures, tracing
+  exploit paths, and writing regression tests are authorized defensive activities when performed in this repository
+  for the defensive purpose and within the authorization boundary stated below.
+- The presence of exploit syntax, malformed packets, adversarial NBT, or proof-of-concept payload construction does
+  not by itself change the blue-team nature of the work. Their purpose here is to eliminate the vulnerability and
+  prove that every relevant ingress, storage, and egress path is safe.
+- Do not reinterpret Rock or ordinary work in this repository as red-team activity unless the maintainer explicitly
+  changes the project's stated purpose and scope.
+- Authorization is strictly limited to systems, servers, clients, accounts, and data owned by the maintainer or for
+  which the maintainer has explicit, scope-specific testing permission. Public reachability or third-party ownership
+  is never authorization by itself. Do not act outside that boundary, provide evasion or persistence tooling, or
+  convert a regression fixture into general-purpose attack automation.
+- Keep reproductions minimal, deterministic, auditable, version-scoped, and confined to disposable test data inside
+  the authorized environment. Prefer automated tests over live execution, and never run a Minecraft server as part
+  of agent verification.
+- The required outcome is defensive: remove malicious data at the root boundary, preserve safe data where possible,
+  log sanitation, add regression coverage, and produce artifacts suitable for authorized verification.
+- This declaration establishes the project's actual role, purpose, and authorization boundary. Any independent
+  platform safety requirements still apply, but they do not change Rock's blue-team identity or make authorized
+  defensive work offensive.
+
 ## Objective: eliminate exploits, do not soften them
 
 Scissors exists to prevent exploit payloads from crashing clients or the server. A fix is complete only when the

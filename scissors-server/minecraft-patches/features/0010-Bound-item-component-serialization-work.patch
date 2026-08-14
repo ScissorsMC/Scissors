@@ -1,0 +1,439 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Telesphoreo <me@telesphoreo.me>
+Date: Fri, 14 Aug 2026 00:35:30 -0400
+Subject: [PATCH] Bound item component serialization work
+
+Reject or strip component values whose encoded structure exceeds a shared complexity budget before codec traversal can stall the server. Apply the same rule to persistent and network boundaries so alternate component carriers cannot bypass it.
+
+diff --git a/net/minecraft/core/component/DataComponentPatch.java b/net/minecraft/core/component/DataComponentPatch.java
+index e6de3f1c863b42522b7d0a46b2a314986d22dae9..8b02ebfd40e22545dc4be0a78ff4e6e5061209a2 100644
+--- a/net/minecraft/core/component/DataComponentPatch.java
++++ b/net/minecraft/core/component/DataComponentPatch.java
+@@ -1,26 +1,46 @@
+ package net.minecraft.core.component;
+ 
+ import com.google.common.collect.Sets;
++import com.mojang.datafixers.util.Pair;
+ import com.mojang.serialization.Codec;
+ import com.mojang.serialization.DataResult;
++import com.mojang.serialization.DynamicOps;
++import com.mojang.serialization.MapLike;
++import io.netty.handler.codec.DecoderException;
+ import it.unimi.dsi.fastutil.objects.Reference2ObjectArrayMap;
+ import it.unimi.dsi.fastutil.objects.Reference2ObjectMap;
+ import it.unimi.dsi.fastutil.objects.Reference2ObjectMaps;
+ import java.util.Optional;
+ import java.util.Set;
+ import java.util.Map.Entry;
++import java.util.concurrent.TimeUnit;
++import java.util.concurrent.atomic.AtomicLong;
+ import java.util.function.Predicate;
+ import net.minecraft.core.registries.BuiltInRegistries;
+ import net.minecraft.network.RegistryFriendlyByteBuf;
++import net.minecraft.network.VarInt;
+ import net.minecraft.network.codec.ByteBufCodecs;
+ import net.minecraft.network.codec.StreamCodec;
+ import net.minecraft.resources.Identifier;
++import net.minecraft.resources.RegistryOps;
+ import net.minecraft.util.Unit;
+ import org.jspecify.annotations.Nullable;
++import org.slf4j.Logger;
+ 
+ public final class DataComponentPatch {
++    private static final Logger LOGGER = com.mojang.logging.LogUtils.getLogger();
++    private static final int MAX_COMPONENT_DEPTH = 32;
++    private static final long MAX_COMPONENT_NODES = 1024;
++    private static final long MAX_COMPONENT_STRING_CHARS = 131072;
++    private static final long MAX_PATCH_NODES = 4096;
++    private static final int MAX_UNTRUSTED_COMPONENT_BYTES = 32768;
++    private static final int MAX_UNTRUSTED_BOOK_COMPONENT_BYTES = 262144;
++    private static final io.papermc.paper.util.CountingOps COMPONENT_COUNTING_OPS = new io.papermc.paper.util.CountingOps(
++        MAX_COMPONENT_DEPTH, MAX_COMPONENT_NODES, MAX_COMPONENT_STRING_CHARS
++    );
++    private static final AtomicLong NEXT_OVERSIZED_WARNING_NANOS = new AtomicLong();
+     public static final DataComponentPatch EMPTY = new DataComponentPatch(Reference2ObjectMaps.emptyMap());
+-    public static final Codec<DataComponentPatch> CODEC = Codec.<PatchKey, Object>dispatchedMap(DataComponentPatch.PatchKey.CODEC, DataComponentPatch.PatchKey::valueCodec)
++    private static final Codec<DataComponentPatch> RAW_CODEC = Codec.<PatchKey, Object>dispatchedMap(DataComponentPatch.PatchKey.CODEC, DataComponentPatch.PatchKey::valueCodec)
+         .xmap(data -> {
+             if (data.isEmpty()) {
+                 return EMPTY;
+@@ -55,25 +75,40 @@ public final class DataComponentPatch {
+ 
+             return map;
+         });
++    // Scissors start - bound the work represented by every item component, including components nested inside lock predicates
++    public static final Codec<DataComponentPatch> CODEC = new Codec<>() {
++        @Override
++        public <T> DataResult<Pair<DataComponentPatch, T>> decode(final DynamicOps<T> ops, final T input) {
++            return DataComponentPatch.RAW_CODEC.decode(ops, sanitizeSerializedComponents(ops, input, "persistent decode"));
++        }
++
++        @Override
++        public <T> DataResult<T> encode(final DataComponentPatch input, final DynamicOps<T> ops, final T prefix) {
++            return DataComponentPatch.RAW_CODEC.encode(input.sanitizeOversized(ops, "persistent encode"), ops, prefix);
++        }
++    };
++    // Scissors end - bound the work represented by every item component, including components nested inside lock predicates
+     public static final StreamCodec<RegistryFriendlyByteBuf, DataComponentPatch> STREAM_CODEC = createStreamCodec(new DataComponentPatch.CodecGetter() {
+         @Override
+         public <T> StreamCodec<RegistryFriendlyByteBuf, T> apply(final DataComponentType<T> type) {
+             return type.streamCodec().cast();
+         }
+-    });
++    }, false);
+     public static final StreamCodec<RegistryFriendlyByteBuf, DataComponentPatch> DELIMITED_STREAM_CODEC = createStreamCodec(
+         new DataComponentPatch.CodecGetter() {
+             @Override
+             public <T> StreamCodec<RegistryFriendlyByteBuf, T> apply(final DataComponentType<T> type) {
+-                StreamCodec<RegistryFriendlyByteBuf, T> original = type.streamCodec().cast();
+-                return original.apply(ByteBufCodecs.registryFriendlyLengthPrefixed(Integer.MAX_VALUE));
++                return type.streamCodec().cast();
+             }
+-        }
++        },
++        true
+     );
+     private static final String REMOVED_PREFIX = "!";
+     final Reference2ObjectMap<DataComponentType<?>, Optional<?>> map;
+ 
+-    private static StreamCodec<RegistryFriendlyByteBuf, DataComponentPatch> createStreamCodec(final DataComponentPatch.CodecGetter codecGetter) {
++    private static StreamCodec<RegistryFriendlyByteBuf, DataComponentPatch> createStreamCodec(
++        final DataComponentPatch.CodecGetter codecGetter, final boolean delimited
++    ) {
+         return new StreamCodec<RegistryFriendlyByteBuf, DataComponentPatch>() {
+             @Override
+             public DataComponentPatch decode(final RegistryFriendlyByteBuf input) {
+@@ -84,30 +119,69 @@ public final class DataComponentPatch {
+                 }
+ 
+                 int expectedSize = positiveCount + negativeCount;
++                if (positiveCount < 0 || negativeCount < 0 || expectedSize < 0 || expectedSize > BuiltInRegistries.DATA_COMPONENT_TYPE.size()) {
++                    throw new DecoderException("Item component count " + expectedSize + " exceeds the registered component count");
++                }
+                 Reference2ObjectMap<DataComponentType<?>, Optional<?>> map = new Reference2ObjectArrayMap<>(Math.min(expectedSize, 65536));
++                Set<DataComponentType<?>> seenTypes = Sets.newIdentityHashSet();
++                boolean sanitizedDuringDecode = false;
+ 
+                 for (int i = 0; i < positiveCount; i++) {
+                     DataComponentType<?> type = DataComponentType.STREAM_CODEC.decode(input);
+-                    Object value = codecGetter.apply(type).decode(input);
++                    if (!seenTypes.add(type)) {
++                        throw new DecoderException("Duplicate item component " + BuiltInRegistries.DATA_COMPONENT_TYPE.getKey(type));
++                    }
++                    Object value;
++                    if (delimited) {
++                        int size = VarInt.read(input);
++                        if (size < 0 || size > input.readableBytes()) {
++                            throw new DecoderException("Invalid item component buffer size " + size);
++                        }
++                        if (size > maxUntrustedNetworkBytes(type)) {
++                            input.skipBytes(size);
++                            warnOversized(type, "untrusted network decode", "encoded byte count " + size);
++                            sanitizedDuringDecode = true;
++                            continue;
++                        }
++
++                        int index = input.readerIndex();
++                        RegistryFriendlyByteBuf componentInput = new RegistryFriendlyByteBuf(input.slice(index, size), input);
++                        input.readerIndex(index + size);
++                        value = codecGetter.apply(type).decode(componentInput);
++                    } else {
++                        value = codecGetter.apply(type).decode(input);
++                    }
+                     map.put(type, Optional.of(value));
+                 }
+ 
+                 for (int i = 0; i < negativeCount; i++) {
+                     DataComponentType<?> type = DataComponentType.STREAM_CODEC.decode(input);
++                    if (!seenTypes.add(type)) {
++                        throw new DecoderException("Duplicate item component " + BuiltInRegistries.DATA_COMPONENT_TYPE.getKey(type));
++                    }
+                     map.put(type, Optional.empty());
+                 }
+ 
+-                return new DataComponentPatch(map);
++                DynamicOps<io.papermc.paper.util.CountingOps.Value> countingOps = input.registryAccess()
++                    .createSerializationContext(COMPONENT_COUNTING_OPS);
++                DataComponentPatch decoded = new DataComponentPatch(map);
++                DataComponentPatch sanitized = decoded.sanitizeOversized(
++                    countingOps, delimited ? "untrusted network decode" : "network decode"
++                );
++                return sanitizedDuringDecode || sanitized != decoded ? sanitized.markSanitizedDuringDecode() : sanitized;
+             }
+ 
+             @Override
+             public void encode(final RegistryFriendlyByteBuf output, final DataComponentPatch patch) {
+-                if (patch.isEmpty()) {
++                DynamicOps<io.papermc.paper.util.CountingOps.Value> countingOps = output.registryAccess()
++                    .createSerializationContext(COMPONENT_COUNTING_OPS);
++                DataComponentPatch sanitizedPatch = patch.sanitizeOversized(countingOps, "network encode");
++                if (sanitizedPatch.isEmpty()) {
+                     output.writeVarInt(0);
+                     output.writeVarInt(0);
+                 } else {
+                     // Paper start - data sanitization for items
+-                    final io.papermc.paper.util.sanitizer.ItemObfuscationSession itemObfuscationSession = patch.map.isEmpty()
++                    final io.papermc.paper.util.sanitizer.ItemObfuscationSession itemObfuscationSession = sanitizedPatch.map.isEmpty()
+                         ? null // Avoid thread local lookup of current session if it won't be needed anyway.
+                         : io.papermc.paper.util.sanitizer.ItemObfuscationSession.currentSession();
+                     // Paper end - data sanitization for items
+@@ -115,7 +189,7 @@ public final class DataComponentPatch {
+                     int negativeCount = 0;
+ 
+                     for (it.unimi.dsi.fastutil.objects.Reference2ObjectMap.Entry<DataComponentType<?>, Optional<?>> entry : Reference2ObjectMaps.fastIterable(
+-                        patch.map
++                        sanitizedPatch.map
+                     )) {
+                         if (entry.getValue().isPresent()) {
+                             if (!io.papermc.paper.util.sanitizer.ItemComponentSanitizer.shouldDrop(itemObfuscationSession, entry.getKey())) positiveCount++; // Paper - data sanitization for items
+@@ -128,19 +202,19 @@ public final class DataComponentPatch {
+                     output.writeVarInt(negativeCount);
+ 
+                     for (it.unimi.dsi.fastutil.objects.Reference2ObjectMap.Entry<DataComponentType<?>, Optional<?>> entry : Reference2ObjectMaps.fastIterable(
+-                        patch.map
++                        sanitizedPatch.map
+                     )) {
+                         Optional<?> value = entry.getValue();
+                         value = io.papermc.paper.util.sanitizer.ItemComponentSanitizer.override(itemObfuscationSession, entry.getKey(), entry.getValue()); // Paper - data sanitization for items
+                         if (value.isPresent()) {
+                             DataComponentType<?> type = entry.getKey();
+                             DataComponentType.STREAM_CODEC.encode(output, type);
+-                            this.encodeComponent(output, type, value.get());
++                            this.encodeComponent(output, type, value.get(), delimited);
+                         }
+                     }
+ 
+                     for (it.unimi.dsi.fastutil.objects.Reference2ObjectMap.Entry<DataComponentType<?>, Optional<?>> entry : Reference2ObjectMaps.fastIterable(
+-                        patch.map
++                        sanitizedPatch.map
+                     )) {
+                         if (entry.getValue().isEmpty()) {
+                             DataComponentType<?> type = entry.getKey();
+@@ -150,10 +224,16 @@ public final class DataComponentPatch {
+                 }
+             }
+ 
+-            private <T> void encodeComponent(final RegistryFriendlyByteBuf output, final DataComponentType<T> type, final Object value) {
++            private <T> void encodeComponent(
++                final RegistryFriendlyByteBuf output, final DataComponentType<T> type, final Object value, final boolean delimited
++            ) {
+                 // Paper start - codec errors of random anonymous classes are useless
+                 try {
+-                    codecGetter.apply(type).encode(output, (T)value);
++                    StreamCodec<RegistryFriendlyByteBuf, T> codec = codecGetter.apply(type).cast();
++                    if (delimited) {
++                        codec = codec.apply(ByteBufCodecs.registryFriendlyLengthPrefixed(maxUntrustedNetworkBytes(type)));
++                    }
++                    codec.encode(output, (T)value);
+                 } catch (final Exception e) {
+                     throw new RuntimeException("Error encoding component " + type, e);
+                 }
+@@ -162,8 +242,163 @@ public final class DataComponentPatch {
+         };
+     }
+ 
++    // Scissors start - eliminate oversized item components at every serialization boundary
++    private static <T> T sanitizeSerializedComponents(final DynamicOps<T> ops, final T input, final String source) {
++        Optional<MapLike<T>> mapResult = ops.getMap(input).result();
++        if (mapResult.isEmpty()) {
++            return input;
++        }
++
++        int maximumEntries = Math.max(1, BuiltInRegistries.DATA_COMPONENT_TYPE.size());
++        java.util.List<Pair<T, T>> entries = mapResult.get().entries().limit((long)maximumEntries + 1).toList();
++        if (entries.size() > maximumEntries) {
++            warnOversized(null, source, "component count exceeds " + maximumEntries);
++            return ops.emptyMap();
++        }
++
++        T result = input;
++        long patchNodes = 0;
++        long patchStringChars = 0;
++        for (Pair<T, T> entry : entries) {
++            Optional<String> keyResult = ops.getStringValue(entry.getFirst()).result();
++            if (keyResult.isEmpty() || keyResult.get().startsWith(REMOVED_PREFIX)) {
++                continue;
++            }
++
++            final io.papermc.paper.util.CountingOps.Value complexity;
++            try {
++                complexity = ops.convertTo(COMPONENT_COUNTING_OPS, entry.getSecond());
++            } catch (final DecoderException | ArithmeticException exception) {
++                result = ops.remove(result, keyResult.get());
++                warnOversized(componentType(keyResult.get()), source, exception.getMessage());
++                continue;
++            }
++
++            long nextPatchNodes = patchNodes + complexity.nodes();
++            long nextPatchStringChars = patchStringChars + complexity.stringChars();
++            if (nextPatchNodes > MAX_PATCH_NODES || nextPatchStringChars > MAX_COMPONENT_STRING_CHARS) {
++                result = ops.remove(result, keyResult.get());
++                warnOversized(componentType(keyResult.get()), source, "total item component budget exceeded");
++            } else {
++                patchNodes = nextPatchNodes;
++                patchStringChars = nextPatchStringChars;
++            }
++        }
++        return result;
++    }
++
++    private DataComponentPatch sanitizeOversized(final DynamicOps<?> contextOps, final String source) {
++        if (this.map.isEmpty()) {
++            return this;
++        }
++
++        Reference2ObjectMap<DataComponentType<?>, Optional<?>> sanitized = new Reference2ObjectArrayMap<>(this.map.size());
++        long patchNodes = 0;
++        long patchStringChars = 0;
++        boolean changed = false;
++        for (Entry<DataComponentType<?>, Optional<?>> entry : Reference2ObjectMaps.fastIterable(this.map)) {
++            Optional<?> value = entry.getValue();
++            if (value.isEmpty()) {
++                sanitized.put(entry.getKey(), value);
++                continue;
++            }
++            if (entry.getKey().isTransient()) {
++                sanitized.put(entry.getKey(), value);
++                continue;
++            }
++
++            final io.papermc.paper.util.CountingOps.Value complexity;
++            try {
++                complexity = encodeComplexity(contextOps, entry.getKey(), value.get());
++            } catch (final DecoderException | ArithmeticException exception) {
++                changed = true;
++                warnOversized(entry.getKey(), source, exception.getMessage());
++                continue;
++            }
++
++            if (complexity == null) {
++                // Leave unrelated codec errors to the real encoder so they are not mistaken for exploit sanitation.
++                sanitized.put(entry.getKey(), value);
++                continue;
++            }
++
++            long nextPatchNodes = patchNodes + complexity.nodes();
++            long nextPatchStringChars = patchStringChars + complexity.stringChars();
++            if (nextPatchNodes > MAX_PATCH_NODES || nextPatchStringChars > MAX_COMPONENT_STRING_CHARS) {
++                changed = true;
++                warnOversized(entry.getKey(), source, "total item component budget exceeded");
++                continue;
++            }
++            patchNodes = nextPatchNodes;
++            patchStringChars = nextPatchStringChars;
++            sanitized.put(entry.getKey(), value);
++        }
++        return changed ? (sanitized.isEmpty() ? EMPTY : new DataComponentPatch(sanitized)) : this;
++    }
++
++    @SuppressWarnings({"rawtypes", "unchecked"})
++    private static io.papermc.paper.util.CountingOps.@Nullable Value encodeComplexity(
++        final DynamicOps<?> contextOps, final DataComponentType<?> type, final Object value
++    ) {
++        DynamicOps<io.papermc.paper.util.CountingOps.Value> countingOps = contextOps instanceof RegistryOps<?> registryOps
++            ? ((RegistryOps)registryOps).withParent(COMPONENT_COUNTING_OPS)
++            : COMPONENT_COUNTING_OPS;
++        DataResult<io.papermc.paper.util.CountingOps.Value> encoded = ((Codec)type.codecOrThrow()).encodeStart(countingOps, value);
++        return encoded.result().orElse(null);
++    }
++
++    private static int maxUntrustedNetworkBytes(final DataComponentType<?> type) {
++        Identifier id = BuiltInRegistries.DATA_COMPONENT_TYPE.getKey(type);
++        if (id != null && (id.getPath().equals("written_book_content") || id.getPath().equals("writable_book_content"))) {
++            return MAX_UNTRUSTED_BOOK_COMPONENT_BYTES;
++        }
++        return MAX_UNTRUSTED_COMPONENT_BYTES;
++    }
++
++    private static @Nullable DataComponentType<?> componentType(final String key) {
++        String normalized = key.startsWith(REMOVED_PREFIX) ? key.substring(REMOVED_PREFIX.length()) : key;
++        Identifier id = Identifier.tryParse(normalized);
++        return id == null ? null : BuiltInRegistries.DATA_COMPONENT_TYPE.getValue(id);
++    }
++
++    private static void warnOversized(final @Nullable DataComponentType<?> type, final String source, final @Nullable String reason) {
++        long now = System.nanoTime();
++        long next = NEXT_OVERSIZED_WARNING_NANOS.get();
++        if (now < next || !NEXT_OVERSIZED_WARNING_NANOS.compareAndSet(next, now + TimeUnit.SECONDS.toNanos(1))) {
++            return;
++        }
++
++        Identifier id = type == null ? null : BuiltInRegistries.DATA_COMPONENT_TYPE.getKey(type);
++        LOGGER.warn(
++            "Discarded oversized item component {} during {}: {} (limits: {} nodes/component, {} nodes/item, depth {}, {} string characters)",
++            id == null ? "<unknown>" : id,
++            source,
++            reason == null ? "complexity limit exceeded" : reason,
++            MAX_COMPONENT_NODES,
++            MAX_PATCH_NODES,
++            MAX_COMPONENT_DEPTH,
++            MAX_COMPONENT_STRING_CHARS
++        );
++    }
++    // Scissors end - eliminate oversized item components at every serialization boundary
++
++    private final boolean sanitizedDuringDecode;
++
+     DataComponentPatch(final Reference2ObjectMap<DataComponentType<?>, Optional<?>> map) {
++        this(map, false);
++    }
++
++    private DataComponentPatch(final Reference2ObjectMap<DataComponentType<?>, Optional<?>> map, final boolean sanitizedDuringDecode) {
+         this.map = map;
++        this.sanitizedDuringDecode = sanitizedDuringDecode;
++    }
++
++    private DataComponentPatch markSanitizedDuringDecode() {
++        return this.sanitizedDuringDecode ? this : new DataComponentPatch(this.map, true);
++    }
++
++    public boolean wasSanitizedDuringDecode() {
++        return this.sanitizedDuringDecode;
+     }
+ 
+     public static DataComponentPatch.Builder builder() {
+diff --git a/net/minecraft/server/network/ServerGamePacketListenerImpl.java b/net/minecraft/server/network/ServerGamePacketListenerImpl.java
+index 32cf2dd6f387f67d3694020b8d33a39c2a09cad6..3dae06641f09c13add9d23948012d17816998d82 100644
+--- a/net/minecraft/server/network/ServerGamePacketListenerImpl.java
++++ b/net/minecraft/server/network/ServerGamePacketListenerImpl.java
+@@ -3587,7 +3587,7 @@ public class ServerGamePacketListenerImpl
+             if (!sanitizedItem.isEmpty() && ItemStack.validateStrict(sanitizedItem).isError()) {
+                 sanitizedItem = ItemStack.EMPTY;
+             }
+-            boolean itemSanitized = !ItemStack.matches(sanitizedItem, itemStack);
++            boolean itemSanitized = itemStack.wereComponentsSanitizedDuringDecode() || !ItemStack.matches(sanitizedItem, itemStack);
+             if (itemSanitized) {
+                 long now = Util.getMillis();
+                 if (now - this.lastUnsafeCreativeItemWarning >= UNSAFE_CREATIVE_ITEM_LOG_INTERVAL) {
+diff --git a/net/minecraft/world/item/ItemStack.java b/net/minecraft/world/item/ItemStack.java
+index 2569387eb5d9a772cf7f13bdd3cbda73d080e3da..216c4115e809ff72ce572d3795333529918bb93b 100644
+--- a/net/minecraft/world/item/ItemStack.java
++++ b/net/minecraft/world/item/ItemStack.java
+@@ -168,6 +168,7 @@ public final class ItemStack implements DataComponentHolder, ItemInstance {
+     @Deprecated
+     private @Nullable Holder<Item> item;
+     private PatchedDataComponentMap components;
++    private boolean componentsSanitizedDuringDecode;
+ 
+     public static DataResult<ItemStack> validateStrict(final ItemStack itemStack) {
+         DataResult<?> result = validateComponents(itemStack.getComponents());
+@@ -280,6 +281,7 @@ public final class ItemStack implements DataComponentHolder, ItemInstance {
+ 
+     public ItemStack(final Holder<Item> item, final int count, final DataComponentPatch components) {
+         this(item, count, PatchedDataComponentMap.fromPatch(item.components(), components));
++        this.componentsSanitizedDuringDecode = components.wasSanitizedDuringDecode(); // Scissors - force creative slot correction after codec sanitation
+     }
+ 
+     private ItemStack(final Holder<Item> item, final int count, final PatchedDataComponentMap components) {
+@@ -293,6 +295,11 @@ public final class ItemStack implements DataComponentHolder, ItemInstance {
+         this.components = new PatchedDataComponentMap(DataComponentMap.EMPTY);
+     }
+ 
++    // Scissors - the creative handler must overwrite the client's unsanitized local saved-toolbar copy
++    public boolean wereComponentsSanitizedDuringDecode() {
++        return this.componentsSanitizedDuringDecode;
++    }
++
+     private static DataResult<?> validateComponents(final DataComponentGetter components) {
+         if (components.get(DataComponents.MAX_DAMAGE) != null && components.getOrDefault(DataComponents.MAX_STACK_SIZE, 1) > 1) {
+             return DataResult.error(() -> "Item cannot be both damageable and stackable");

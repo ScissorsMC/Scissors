@@ -1,0 +1,505 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Telesphoreo <me@telesphoreo.me>
+Date: Fri, 14 Aug 2026 00:35:30 -0400
+Subject: [PATCH] Test bounded item component serialization
+
+Extend CountingOps to account for nodes and strings, and cover the reported oversized lock predicate at persistent and untrusted network boundaries.
+
+diff --git a/src/main/java/io/papermc/paper/util/CountingOps.java b/src/main/java/io/papermc/paper/util/CountingOps.java
+index 1081e24e4c0a51b791581f9e82556ea63b427b75..9e17ebae524a34f838e448a1feeb230d99622ce2 100644
+--- a/src/main/java/io/papermc/paper/util/CountingOps.java
++++ b/src/main/java/io/papermc/paper/util/CountingOps.java
+@@ -21,9 +21,17 @@ public final class CountingOps implements DynamicOps<CountingOps.Value> {
+     public static final CountingOps INSTANCE = new CountingOps(Tag.MAX_DEPTH);
+ 
+     private final int maxDepth;
++    private final long maxNodes;
++    private final long maxStringChars;
+ 
+     public CountingOps(final int maxDepth) {
++        this(maxDepth, Long.MAX_VALUE, Long.MAX_VALUE);
++    }
++
++    public CountingOps(final int maxDepth, final long maxNodes, final long maxStringChars) {
+         this.maxDepth = maxDepth;
++        this.maxNodes = maxNodes;
++        this.maxStringChars = maxStringChars;
+     }
+ 
+     @Override
+@@ -48,17 +56,17 @@ public final class CountingOps implements DynamicOps<CountingOps.Value> {
+ 
+     @Override
+     public Value createNumeric(final Number value) {
+-        return Value.PRIMITIVE;
++        return this.primitive(0);
+     }
+ 
+     @Override
+     public Value createString(final String value) {
+-        return Value.PRIMITIVE;
++        return this.primitive(value.length());
+     }
+ 
+     @Override
+     public Value createBoolean(final boolean value) {
+-        return Value.PRIMITIVE;
++        return this.primitive(0);
+     }
+ 
+     @Override
+@@ -80,11 +88,12 @@ public final class CountingOps implements DynamicOps<CountingOps.Value> {
+     public DataResult<Value> mergeToList(final Value input, final Value value) {
+         final Accumulator accumulator = new Accumulator();
+         if (input.kind == Value.Kind.LIST) {
+-            accumulator.acceptDepth(input.depth - 1);
++            accumulator.acceptContents(input);
+         } else if (input.kind != Value.Kind.EMPTY) {
+             accumulator.accept(input);
+         }
+         accumulator.accept(value);
++        this.checkBudget(accumulator);
+         return DataResult.success(this.container(Value.Kind.LIST, accumulator));
+     }
+ 
+@@ -92,11 +101,14 @@ public final class CountingOps implements DynamicOps<CountingOps.Value> {
+     public DataResult<Value> mergeToList(final Value input, final List<Value> values) {
+         final Accumulator accumulator = new Accumulator();
+         if (input.kind == Value.Kind.LIST) {
+-            accumulator.acceptDepth(input.depth - 1);
++            accumulator.acceptContents(input);
+         } else if (input.kind != Value.Kind.EMPTY) {
+             accumulator.accept(input);
+         }
+-        values.forEach(accumulator::accept);
++        values.forEach(value -> {
++            accumulator.accept(value);
++            this.checkBudget(accumulator);
++        });
+         return DataResult.success(this.container(Value.Kind.LIST, accumulator));
+     }
+ 
+@@ -104,11 +116,13 @@ public final class CountingOps implements DynamicOps<CountingOps.Value> {
+     public DataResult<Value> mergeToMap(final Value input, final Value key, final Value value) {
+         final Accumulator accumulator = new Accumulator();
+         if (input.kind == Value.Kind.MAP) {
+-            accumulator.acceptDepth(input.depth - 1);
++            accumulator.acceptContents(input);
+         } else if (input.kind != Value.Kind.EMPTY) {
+             accumulator.accept(input);
+         }
++        accumulator.accept(key);
+         accumulator.accept(value);
++        this.checkBudget(accumulator);
+         return DataResult.success(this.container(Value.Kind.MAP, accumulator));
+     }
+ 
+@@ -116,12 +130,14 @@ public final class CountingOps implements DynamicOps<CountingOps.Value> {
+     public DataResult<Value> mergeToMap(final Value input, final Map<Value, Value> values) {
+         final Accumulator accumulator = new Accumulator();
+         if (input.kind == Value.Kind.MAP) {
+-            accumulator.acceptDepth(input.depth - 1);
++            accumulator.acceptContents(input);
+         } else if (input.kind != Value.Kind.EMPTY) {
+             accumulator.accept(input);
+         }
+         values.forEach((key, value) -> {
++            accumulator.accept(key);
+             accumulator.accept(value);
++            this.checkBudget(accumulator);
+         });
+         return DataResult.success(this.container(Value.Kind.MAP, accumulator));
+     }
+@@ -130,12 +146,14 @@ public final class CountingOps implements DynamicOps<CountingOps.Value> {
+     public DataResult<Value> mergeToMap(final Value input, final MapLike<Value> values) {
+         final Accumulator accumulator = new Accumulator();
+         if (input.kind == Value.Kind.MAP) {
+-            accumulator.acceptDepth(input.depth - 1);
++            accumulator.acceptContents(input);
+         } else if (input.kind != Value.Kind.EMPTY) {
+             accumulator.accept(input);
+         }
+         values.entries().forEach(entry -> {
++            accumulator.accept(entry.getFirst());
+             accumulator.accept(entry.getSecond());
++            this.checkBudget(accumulator);
+         });
+         return DataResult.success(this.container(Value.Kind.MAP, accumulator));
+     }
+@@ -153,7 +171,11 @@ public final class CountingOps implements DynamicOps<CountingOps.Value> {
+     @Override
+     public Value createMap(final Stream<Pair<Value, Value>> map) {
+         final Accumulator accumulator = new Accumulator();
+-        map.forEach(entry -> accumulator.accept(entry.getSecond()));
++        map.forEach(entry -> {
++            accumulator.accept(entry.getFirst());
++            accumulator.accept(entry.getSecond());
++            this.checkBudget(accumulator);
++        });
+         return this.container(Value.Kind.MAP, accumulator);
+     }
+ 
+@@ -161,7 +183,9 @@ public final class CountingOps implements DynamicOps<CountingOps.Value> {
+     public Value createMap(final Map<Value, Value> map) {
+         final Accumulator accumulator = new Accumulator();
+         map.forEach((key, value) -> {
++            accumulator.accept(key);
+             accumulator.accept(value);
++            this.checkBudget(accumulator);
+         });
+         return this.container(Value.Kind.MAP, accumulator);
+     }
+@@ -169,23 +193,26 @@ public final class CountingOps implements DynamicOps<CountingOps.Value> {
+     @Override
+     public Value createList(final Stream<Value> input) {
+         final Accumulator accumulator = new Accumulator();
+-        input.forEach(accumulator::accept);
++        input.forEach(value -> {
++            accumulator.accept(value);
++            this.checkBudget(accumulator);
++        });
+         return this.container(Value.Kind.LIST, accumulator);
+     }
+ 
+     @Override
+     public Value createByteList(final ByteBuffer input) {
+-        return Value.PRIMITIVE;
++        return this.primitiveList(input.remaining());
+     }
+ 
+     @Override
+     public Value createIntList(final IntStream input) {
+-        return Value.PRIMITIVE;
++        return this.primitiveList(input.count());
+     }
+ 
+     @Override
+     public Value createLongList(final LongStream input) {
+-        return Value.PRIMITIVE;
++        return this.primitiveList(input.count());
+     }
+ 
+     @Override
+@@ -209,45 +236,101 @@ public final class CountingOps implements DynamicOps<CountingOps.Value> {
+     }
+ 
+     private Value container(final Value.Kind kind, final Accumulator accumulator) {
+-        return this.container(kind, accumulator.maxDepth);
++        return this.container(kind, accumulator.maxDepth, accumulator.nodes, accumulator.stringChars);
+     }
+ 
+     private Value container(final Value.Kind kind, final int childDepth) {
++        return this.container(kind, childDepth, 0, 0);
++    }
++
++    private Value container(final Value.Kind kind, final int childDepth, final long childNodes, final long stringChars) {
+         final int depth = childDepth + 1;
+         if (depth > this.maxDepth) {
+             throw new DecoderException("NBT depth exceeded: " + depth + " > " + this.maxDepth);
+         }
+-        return new Value(kind, depth);
++        final Value value = new Value(kind, depth, Math.addExact(childNodes, 1), stringChars);
++        this.checkBudget(value);
++        return value;
++    }
++
++    private Value primitive(final long stringChars) {
++        final Value value = new Value(Value.Kind.PRIMITIVE, 0, 1, stringChars);
++        this.checkBudget(value);
++        return value;
++    }
++
++    private Value primitiveList(final long elements) {
++        final Value value = new Value(Value.Kind.PRIMITIVE, 0, Math.addExact(elements, 1), 0);
++        this.checkBudget(value);
++        return value;
++    }
++
++    private void checkBudget(final Accumulator accumulator) {
++        this.checkBudget(accumulator.nodes + 1, accumulator.stringChars);
++    }
++
++    private void checkBudget(final Value value) {
++        this.checkBudget(value.nodes, value.stringChars);
++    }
++
++    private void checkBudget(final long nodes, final long stringChars) {
++        if (nodes > this.maxNodes) {
++            throw new DecoderException("Encoded value node count exceeded: " + nodes + " > " + this.maxNodes);
++        }
++        if (stringChars > this.maxStringChars) {
++            throw new DecoderException("Encoded value string length exceeded: " + stringChars + " > " + this.maxStringChars);
++        }
+     }
+ 
+     private static final class Accumulator {
+         private int maxDepth;
++        private long nodes;
++        private long stringChars;
+ 
+         private void accept(final Value value) {
+             this.acceptDepth(value.depth);
++            this.nodes = Math.addExact(this.nodes, value.nodes);
++            this.stringChars = Math.addExact(this.stringChars, value.stringChars);
+         }
+ 
+         private void acceptDepth(final int depth) {
+             this.maxDepth = Math.max(this.maxDepth, depth);
+         }
++
++        private void acceptContents(final Value value) {
++            this.acceptDepth(value.depth - 1);
++            this.nodes = Math.addExact(this.nodes, value.nodes - 1);
++            this.stringChars = Math.addExact(this.stringChars, value.stringChars);
++        }
+     }
+ 
+     public static final class Value {
+-        private static final Value EMPTY = new Value(Kind.EMPTY, 0);
+-        private static final Value PRIMITIVE = new Value(Kind.PRIMITIVE, 0);
++        private static final Value EMPTY = new Value(Kind.EMPTY, 0, 0, 0);
+ 
+         private final Kind kind;
+         private final int depth;
++        private final long nodes;
++        private final long stringChars;
+ 
+-        private Value(final Kind kind, final int depth) {
++        private Value(final Kind kind, final int depth, final long nodes, final long stringChars) {
+             this.kind = kind;
+             this.depth = depth;
++            this.nodes = nodes;
++            this.stringChars = stringChars;
+         }
+ 
+         public int depth() {
+             return this.depth;
+         }
+ 
++        public long nodes() {
++            return this.nodes;
++        }
++
++        public long stringChars() {
++            return this.stringChars;
++        }
++
+         private enum Kind {
+             EMPTY,
+             PRIMITIVE,
+@@ -272,13 +355,14 @@ public final class CountingOps implements DynamicOps<CountingOps.Value> {
+         @Override
+         protected Accumulator append(final Accumulator builder, final Value value) {
+             builder.accept(value);
++            this.ops.checkBudget(builder);
+             return builder;
+         }
+ 
+         @Override
+         protected DataResult<Value> build(final Accumulator builder, final Value prefix) {
+             if (prefix.kind == Value.Kind.LIST) {
+-                builder.acceptDepth(prefix.depth - 1);
++                builder.acceptContents(prefix);
+             } else if (prefix.kind != Value.Kind.EMPTY) {
+                 builder.accept(prefix);
+             }
+@@ -301,14 +385,16 @@ public final class CountingOps implements DynamicOps<CountingOps.Value> {
+ 
+         @Override
+         protected Accumulator append(final Value key, final Value value, final Accumulator builder) {
++            builder.accept(key);
+             builder.accept(value);
++            this.ops.checkBudget(builder);
+             return builder;
+         }
+ 
+         @Override
+         protected DataResult<Value> build(final Accumulator builder, final Value prefix) {
+             if (prefix.kind == Value.Kind.MAP) {
+-                builder.acceptDepth(prefix.depth - 1);
++                builder.acceptContents(prefix);
+             } else if (prefix.kind != Value.Kind.EMPTY) {
+                 builder.accept(prefix);
+             }
+diff --git a/src/test/java/io/papermc/paper/adventure/DecimatorTest.java b/src/test/java/io/papermc/paper/adventure/DecimatorTest.java
+index acb24f095064b8cc53949ea02c94d0f10b8c78ab..2f638becfb96b00c9133d7c289ecc6f006dc0b63 100644
+--- a/src/test/java/io/papermc/paper/adventure/DecimatorTest.java
++++ b/src/test/java/io/papermc/paper/adventure/DecimatorTest.java
+@@ -62,12 +62,14 @@ class DecimatorTest {
+     }
+ 
+     @Test
+-    void discardsUndecodableCreativeItems() {
++    void stripsUndecodableCreativeComponents() {
+         final RegistryFriendlyByteBuf buf = creativeSlotPacket(decimatorCustomName());
+ 
+         final ServerboundSetCreativeModeSlotPacket packet = ServerboundSetCreativeModeSlotPacket.STREAM_CODEC.decode(buf);
+ 
+-        assertTrue(packet.itemStack().isEmpty());
++        assertTrue(packet.itemStack().is(Items.STONE));
++        assertFalse(packet.itemStack().has(DataComponents.CUSTOM_NAME));
++        assertTrue(packet.itemStack().wereComponentsSanitizedDuringDecode());
+         assertEquals(0, buf.readableBytes());
+     }
+ 
+diff --git a/src/test/java/io/papermc/paper/item/OversizedItemComponentTest.java b/src/test/java/io/papermc/paper/item/OversizedItemComponentTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..2d1a57fc57024625035962bfe62615f117fad2b3
+--- /dev/null
++++ b/src/test/java/io/papermc/paper/item/OversizedItemComponentTest.java
+@@ -0,0 +1,155 @@
++package io.papermc.paper.item;
++
++import io.netty.buffer.Unpooled;
++import java.util.List;
++import java.util.stream.IntStream;
++import net.minecraft.advancements.predicates.DataComponentMatchers;
++import net.minecraft.advancements.predicates.ItemPredicate;
++import net.minecraft.core.component.DataComponentExactPredicate;
++import net.minecraft.core.component.DataComponentMap;
++import net.minecraft.core.component.DataComponentPatch;
++import net.minecraft.core.component.DataComponentType;
++import net.minecraft.core.component.DataComponents;
++import net.minecraft.nbt.CompoundTag;
++import net.minecraft.nbt.IntArrayTag;
++import net.minecraft.nbt.NbtOps;
++import net.minecraft.nbt.Tag;
++import net.minecraft.network.RegistryFriendlyByteBuf;
++import net.minecraft.resources.RegistryOps;
++import net.minecraft.world.LockCode;
++import net.minecraft.world.item.ItemStack;
++import net.minecraft.world.item.component.CustomModelData;
++import org.bukkit.support.RegistryHelper;
++import org.bukkit.support.environment.AllFeatures;
++import org.junit.jupiter.api.Test;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertNull;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++@AllFeatures
++class OversizedItemComponentTest {
++
++    private static final int EXPLOIT_LIST_SIZE = 9_000;
++
++    @Test
++    void stripsOversizedLockBeforePersistentComponentDecode() {
++        final RegistryOps<Tag> ops = RegistryHelper.registryAccess().createSerializationContext(NbtOps.INSTANCE);
++        final CompoundTag components = componentsWithOversizedLock();
++        components.putInt("minecraft:damage", 1);
++
++        final DataComponentPatch decoded = DataComponentPatch.CODEC.parse(ops, components).getOrThrow();
++
++        assertNull(decoded.get(DataComponentMap.EMPTY, DataComponents.LOCK));
++        assertEquals(1, decoded.get(DataComponentMap.EMPTY, DataComponents.DAMAGE));
++    }
++
++    @Test
++    void appliesTheSameLimitToEveryPersistentComponentType() {
++        final RegistryOps<Tag> ops = RegistryHelper.registryAccess().createSerializationContext(NbtOps.INSTANCE);
++        final CompoundTag customData = new CompoundTag();
++        customData.put("attacker_chosen_list", new IntArrayTag(IntStream.range(0, EXPLOIT_LIST_SIZE).toArray()));
++        final CompoundTag components = new CompoundTag();
++        components.put("minecraft:custom_data", customData);
++        components.putInt("minecraft:repair_cost", 7);
++
++        final DataComponentPatch decoded = DataComponentPatch.CODEC.parse(ops, components).getOrThrow();
++
++        assertNull(decoded.get(DataComponentMap.EMPTY, DataComponents.CUSTOM_DATA));
++        assertEquals(7, decoded.get(DataComponentMap.EMPTY, DataComponents.REPAIR_COST));
++    }
++
++    @Test
++    void stripsOversizedLockWhenLoadingAnItemAndKeepsValidRemainder() {
++        final RegistryOps<Tag> ops = RegistryHelper.registryAccess().createSerializationContext(NbtOps.INSTANCE);
++        final CompoundTag item = new CompoundTag();
++        item.putString("id", "minecraft:stone");
++        item.putInt("count", 1);
++        final CompoundTag components = componentsWithOversizedLock();
++        components.putInt("minecraft:repair_cost", 7);
++        item.put("components", components);
++
++        final ItemStack decoded = ItemStack.CODEC.parse(ops, item).getOrThrow();
++
++        assertNull(decoded.get(DataComponents.LOCK));
++        assertEquals(7, decoded.get(DataComponents.REPAIR_COST));
++    }
++
++    @Test
++    void skipsOversizedDelimitedComponentBeforeItsNetworkCodecRuns() {
++        final RegistryFriendlyByteBuf input = new RegistryFriendlyByteBuf(Unpooled.buffer(), RegistryHelper.registryAccess());
++        input.writeVarInt(2);
++        input.writeVarInt(0);
++        writeDelimited(input, DataComponents.LOCK, oversizedLock());
++        writeDelimited(input, DataComponents.REPAIR_COST, 7);
++
++        final DataComponentPatch decoded = DataComponentPatch.DELIMITED_STREAM_CODEC.decode(input);
++
++        assertNull(decoded.get(DataComponentMap.EMPTY, DataComponents.LOCK));
++        assertEquals(7, decoded.get(DataComponentMap.EMPTY, DataComponents.REPAIR_COST));
++        assertTrue(decoded.wasSanitizedDuringDecode());
++        assertEquals(0, input.readableBytes());
++    }
++
++    @Test
++    void stripsProgrammaticallyConstructedOversizedComponentsBeforePersistentEncode() {
++        final DataComponentPatch input = DataComponentPatch.builder()
++            .set(DataComponents.LOCK, oversizedLock())
++            .set(DataComponents.REPAIR_COST, 7)
++            .build();
++        final RegistryOps<Tag> ops = RegistryHelper.registryAccess().createSerializationContext(NbtOps.INSTANCE);
++
++        final Tag encoded = DataComponentPatch.CODEC.encodeStart(ops, input).getOrThrow();
++        final DataComponentPatch decoded = DataComponentPatch.CODEC.parse(ops, encoded).getOrThrow();
++
++        assertNull(decoded.get(DataComponentMap.EMPTY, DataComponents.LOCK));
++        assertEquals(7, decoded.get(DataComponentMap.EMPTY, DataComponents.REPAIR_COST));
++    }
++
++    @Test
++    void keepsOrdinaryLockPredicates() {
++        final RegistryOps<Tag> ops = RegistryHelper.registryAccess().createSerializationContext(NbtOps.INSTANCE);
++        final DataComponentPatch input = DataComponentPatch.builder()
++            .set(DataComponents.LOCK, lockWithColors(List.of(0x123456, 0x654321)))
++            .build();
++        final Tag encoded = DataComponentPatch.CODEC.encodeStart(ops, input).getOrThrow();
++        final DataComponentPatch decoded = DataComponentPatch.CODEC.parse(ops, encoded).getOrThrow();
++
++        assertEquals(input.get(DataComponentMap.EMPTY, DataComponents.LOCK), decoded.get(DataComponentMap.EMPTY, DataComponents.LOCK));
++    }
++
++    private static CompoundTag componentsWithOversizedLock() {
++        final CompoundTag customModelData = new CompoundTag();
++        customModelData.put("colors", new IntArrayTag(IntStream.range(0, EXPLOIT_LIST_SIZE).toArray()));
++        final CompoundTag expectedComponents = new CompoundTag();
++        expectedComponents.put("minecraft:custom_model_data", customModelData);
++        final CompoundTag lock = new CompoundTag();
++        lock.put("components", expectedComponents);
++        final CompoundTag components = new CompoundTag();
++        components.put("minecraft:lock", lock);
++        return components;
++    }
++
++    private static LockCode oversizedLock() {
++        return lockWithColors(IntStream.range(0, EXPLOIT_LIST_SIZE).boxed().toList());
++    }
++
++    private static LockCode lockWithColors(final List<Integer> colors) {
++        final CustomModelData customModelData = new CustomModelData(List.of(), List.of(), List.of(), colors);
++        final DataComponentMatchers matchers = DataComponentMatchers.Builder.components()
++            .exact(DataComponentExactPredicate.expect(DataComponents.CUSTOM_MODEL_DATA, customModelData))
++            .build();
++        return new LockCode(ItemPredicate.Builder.item().withComponents(matchers).build());
++    }
++
++    private static <T> void writeDelimited(
++        final RegistryFriendlyByteBuf output, final DataComponentType<T> type, final T value
++    ) {
++        DataComponentType.STREAM_CODEC.encode(output, type);
++        final RegistryFriendlyByteBuf component = new RegistryFriendlyByteBuf(Unpooled.buffer(), output);
++        type.streamCodec().encode(component, value);
++        output.writeVarInt(component.readableBytes());
++        output.writeBytes(component);
++        component.release();
++    }
++}
