@@ -44,7 +44,7 @@ gradle.lifecycle.beforeProject {
     val scissorsVersionChannel = providers.gradleProperty("channel").get().trim()
     val scissorsBuildNumber = providers.environmentVariable("BUILD_NUMBER").orNull?.trim()?.toInt()
     val versionString = if (scissorsBuildNumber == null) {
-        "$mcVersion.local-SNAPSHOT"
+        mcVersion
     } else {
         "$mcVersion.build.$scissorsBuildNumber-${scissorsVersionChannel.lowercase()}"
     }
