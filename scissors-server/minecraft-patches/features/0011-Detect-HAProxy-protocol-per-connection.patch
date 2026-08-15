@@ -1,0 +1,24 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Telesphoreo <me@telesphoreo.me>
+Date: Fri, 14 Aug 2026 22:05:24 -0400
+Subject: [PATCH] Detect HAProxy protocol per connection
+
+Allow trusted mixed-protocol listeners to retain Paper's existing PROXY address handoff for Java proxy connections while passing non-PROXY WebSocket traffic through untouched.
+
+diff --git a/net/minecraft/server/network/ServerConnectionListener.java b/net/minecraft/server/network/ServerConnectionListener.java
+index 8a2f1ebcf06bb0c1e8b352652de69b6c1d74daf3..b4ba1fb723004320cc5b89418f147d76fc4fad4f 100644
+--- a/net/minecraft/server/network/ServerConnectionListener.java
++++ b/net/minecraft/server/network/ServerConnectionListener.java
+@@ -110,7 +110,11 @@ public class ServerConnectionListener {
+                                         : new Connection(PacketFlow.SERVERBOUND);
+                                     // Paper start - Add support for Proxy Protocol
+                                     if (io.papermc.paper.configuration.GlobalConfiguration.get().proxies.proxyProtocol) {
+-                                        channel.pipeline().addAfter(HandlerNames.TIMEOUT, "haproxy-decoder", new io.netty.handler.codec.haproxy.HAProxyMessageDecoder());
++                                        // Scissors start - detect HAProxy protocol per connection
++                                        final io.netty.handler.codec.haproxy.HAProxyMessageDecoder haProxyDecoder = new io.netty.handler.codec.haproxy.HAProxyMessageDecoder();
++                                        channel.pipeline().addAfter(HandlerNames.TIMEOUT, "haproxy-detector", new io.github.scissorsmc.net.OptionalHAProxyMessageDecoder(haProxyDecoder, "haproxy-handler"));
++                                        channel.pipeline().addAfter("haproxy-detector", "haproxy-decoder", haProxyDecoder);
++                                        // Scissors end - detect HAProxy protocol per connection
+                                         channel.pipeline().addAfter("haproxy-decoder", "haproxy-handler", new ChannelInboundHandlerAdapter() {
+                                             @Override
+                                             public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception {
