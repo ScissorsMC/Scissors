@@ -1,0 +1,122 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Telesphoreo <me@telesphoreo.me>
+Date: Sat, 29 Aug 2026 22:54:10 -0400
+Subject: [PATCH] Test instant potion amplifier sanitization
+
+Cover the reported amplifier-125 instant health overflow, preserve vanilla amounts, and verify potion contents remove unsafe custom amplifiers while retaining unrelated effects.
+
+diff --git a/src/test/java/io/papermc/paper/item/InstantHealthOverflowTest.java b/src/test/java/io/papermc/paper/item/InstantHealthOverflowTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..9b8180e176c6ff3533ee654d8cfb83bdcffcee6c
+--- /dev/null
++++ b/src/test/java/io/papermc/paper/item/InstantHealthOverflowTest.java
+@@ -0,0 +1,109 @@
++package io.papermc.paper.item;
++
++import java.lang.reflect.Method;
++import java.util.List;
++import java.util.Optional;
++import net.minecraft.core.component.DataComponents;
++import net.minecraft.nbt.NbtOps;
++import net.minecraft.nbt.Tag;
++import net.minecraft.resources.RegistryOps;
++import net.minecraft.world.effect.MobEffectInstance;
++import net.minecraft.world.effect.MobEffects;
++import net.minecraft.world.item.ItemStack;
++import net.minecraft.world.item.Items;
++import net.minecraft.world.item.alchemy.PotionContents;
++import org.bukkit.support.RegistryHelper;
++import org.bukkit.support.environment.AllFeatures;
++import org.junit.jupiter.api.Test;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertNotSame;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++@AllFeatures
++class InstantHealthOverflowTest {
++
++    @Test
++    void reportedAmplifierCannotProduceNegativeHealing() {
++        assertTrue((4 << 125) < 0, "The reported vanilla shift must reproduce the signed overflow");
++        assertEquals(Integer.MAX_VALUE, calculateEffectAmount(4, 125, 1.0));
++        assertEquals(Integer.MAX_VALUE, calculateEffectAmount(4, 125, 0.5));
++    }
++
++    @Test
++    void preservesVanillaInstantPotionAmounts() {
++        assertEquals(4, calculateEffectAmount(4, 0, 1.0));
++        assertEquals(8, calculateEffectAmount(4, 1, 1.0));
++        assertEquals(4, calculateEffectAmount(4, 1, 0.5));
++        assertEquals(12, calculateEffectAmount(6, 1, 1.0));
++    }
++
++    @Test
++    void rejectsInvalidScaleWithoutCreatingNegativeAmounts() {
++        assertEquals(0, calculateEffectAmount(4, 1, -1.0));
++        assertEquals(0, calculateEffectAmount(4, 1, Double.NaN));
++    }
++
++    @Test
++    void sanitizesReportedCustomPotionAtThePotionContentsBoundary() {
++        MobEffectInstance reported = new MobEffectInstance(MobEffects.INSTANT_HEALTH, 2000, 125, false, true, true);
++        ItemStack potion = new ItemStack(Items.SPLASH_POTION);
++        potion.set(DataComponents.POTION_CONTENTS, customPotion(reported));
++
++        ItemStack sanitizedPotion = ItemStack.sanitizeUnsafeData(potion);
++        assertNotSame(potion, sanitizedPotion);
++        assertFalse(ItemStack.matches(potion, sanitizedPotion));
++        assertEquals(125, potion.get(DataComponents.POTION_CONTENTS).customEffects().getFirst().getAmplifier());
++
++        MobEffectInstance sanitized = sanitizedPotion.get(DataComponents.POTION_CONTENTS).customEffects().getFirst();
++        assertEquals(MobEffects.INSTANT_HEALTH, sanitized.getEffect());
++        assertEquals(1, sanitized.getAmplifier());
++        assertEquals(2000, sanitized.getDuration());
++        assertEquals(reported.isVisible(), sanitized.isVisible());
++        assertEquals(reported.showIcon(), sanitized.showIcon());
++    }
++
++    @Test
++    void storageDecodeEliminatesTheUnsafeAmplifier() {
++        ItemStack potion = new ItemStack(Items.SPLASH_POTION);
++        potion.set(
++            DataComponents.POTION_CONTENTS,
++            customPotion(new MobEffectInstance(MobEffects.INSTANT_HEALTH, 2000, 125))
++        );
++        RegistryOps<Tag> ops = RegistryHelper.registryAccess().createSerializationContext(NbtOps.INSTANCE);
++
++        Tag encoded = ItemStack.CODEC.encodeStart(ops, potion).getOrThrow();
++        ItemStack loaded = ItemStack.CODEC.parse(ops, encoded).getOrThrow();
++
++        assertEquals(1, loaded.get(DataComponents.POTION_CONTENTS).customEffects().getFirst().getAmplifier());
++    }
++
++    @Test
++    void sanitizesInstantDamageButPreservesOtherCustomEffects() {
++        PotionContents contents = customPotion(
++            new MobEffectInstance(MobEffects.INSTANT_DAMAGE, 1, 255),
++            new MobEffectInstance(MobEffects.SATURATION, 1, 125),
++            new MobEffectInstance(MobEffects.INSTANT_HEALTH, 1, 1)
++        ).sanitizeUnsafeEffects();
++
++        assertEquals(1, contents.customEffects().get(0).getAmplifier());
++        assertEquals(125, contents.customEffects().get(1).getAmplifier());
++        assertEquals(1, contents.customEffects().get(2).getAmplifier());
++    }
++
++    private static PotionContents customPotion(final MobEffectInstance... effects) {
++        return new PotionContents(Optional.empty(), Optional.empty(), List.of(effects), Optional.empty());
++    }
++
++    private static int calculateEffectAmount(final int baseAmount, final int amplifier, final double scale) {
++        try {
++            Class<?> effectClass = Class.forName("net.minecraft.world.effect.HealOrHarmMobEffect");
++            Method method = effectClass.getDeclaredMethod("calculateEffectAmount", int.class, int.class, double.class);
++            method.setAccessible(true);
++            return (int)method.invoke(null, baseAmount, amplifier, scale);
++        } catch (ReflectiveOperationException exception) {
++            throw new AssertionError(exception);
++        }
++    }
++}

@@ -1,0 +1,251 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Telesphoreo <me@telesphoreo.me>
+Date: Sat, 29 Aug 2026 22:54:10 -0400
+Subject: [PATCH] Sanitize overflowing instant potion amplifiers
+
+Cap custom instant health and damage potion amplifiers at the largest vanilla level, and use saturating arithmetic at the effect sink so raw callers cannot turn healing negative through an overflowing shift.
+
+diff --git a/net/minecraft/world/effect/HealOrHarmMobEffect.java b/net/minecraft/world/effect/HealOrHarmMobEffect.java
+index f5e89c81a4aae3cbbe85e0ebb0ac1adfc51f0de3..4f68559f79650b8528eb2daf95df3673dca3c5f6 100644
+--- a/net/minecraft/world/effect/HealOrHarmMobEffect.java
++++ b/net/minecraft/world/effect/HealOrHarmMobEffect.java
+@@ -1,6 +1,7 @@
+ package net.minecraft.world.effect;
+ 
+ import net.minecraft.server.level.ServerLevel;
++import net.minecraft.util.Mth;
+ import net.minecraft.world.entity.Entity;
+ import net.minecraft.world.entity.LivingEntity;
+ import org.jspecify.annotations.Nullable;
+@@ -16,9 +17,11 @@ class HealOrHarmMobEffect extends InstantaneousMobEffect {
+     @Override
+     public boolean applyEffectTick(final ServerLevel level, final LivingEntity mob, final int amplification) {
+         if (this.isHarm == mob.isInvertedHealAndHarm()) {
+-            mob.heal(Math.max(4 << amplification, 0), org.bukkit.event.entity.EntityRegainHealthEvent.RegainReason.MAGIC); // CraftBukkit
++            // Scissors start - prevent amplifier shift overflow
++            mob.heal(calculateEffectAmount(4, amplification, 1.0), org.bukkit.event.entity.EntityRegainHealthEvent.RegainReason.MAGIC); // CraftBukkit
++            // Scissors end - prevent amplifier shift overflow
+         } else {
+-            mob.hurtServer(level, mob.damageSources().magic(), 6 << amplification);
++            mob.hurtServer(level, mob.damageSources().magic(), calculateEffectAmount(6, amplification, 1.0)); // Scissors - prevent amplifier shift overflow
+         }
+ 
+         return true;
+@@ -35,10 +38,10 @@ class HealOrHarmMobEffect extends InstantaneousMobEffect {
+     ) {
+         if (!new io.papermc.paper.event.entity.EntityEffectTickEvent(mob.getBukkitLivingEntity(), org.bukkit.craftbukkit.potion.CraftPotionEffectType.minecraftToBukkit(this), amplification).callEvent()) { return; } // Paper - Add EntityEffectTickEvent
+         if (this.isHarm == mob.isInvertedHealAndHarm()) {
+-            int amount = (int)(scale * (4 << amplification) + 0.5);
++            int amount = calculateEffectAmount(4, amplification, scale); // Scissors - prevent amplifier shift overflow
+             mob.heal(amount, org.bukkit.event.entity.EntityRegainHealthEvent.RegainReason.MAGIC); // CraftBukkit
+         } else {
+-            int amount = (int)(scale * (6 << amplification) + 0.5);
++            int amount = calculateEffectAmount(6, amplification, scale); // Scissors - prevent amplifier shift overflow
+             if (source == null) {
+                 mob.hurtServer(serverLevel, mob.damageSources().magic(), amount);
+             } else {
+@@ -46,4 +49,21 @@ class HealOrHarmMobEffect extends InstantaneousMobEffect {
+             }
+         }
+     }
++
++    // Scissors start - prevent instant health/damage amplifier shift overflow
++    static int calculateEffectAmount(final int baseAmount, final int amplification, final double scale) {
++        if (!(scale > 0.0)) {
++            return 0;
++        }
++
++        double amount = scale * Math.scalb(
++            (double)baseAmount,
++            Mth.clamp(amplification, MobEffectInstance.MIN_AMPLIFIER, MobEffectInstance.MAX_AMPLIFIER)
++        );
++        if (amount >= Integer.MAX_VALUE) {
++            return Integer.MAX_VALUE;
++        }
++        return Math.max((int)(amount + 0.5), 0);
++    }
++    // Scissors end - prevent instant health/damage amplifier shift overflow
+ }
+diff --git a/net/minecraft/world/effect/MobEffectInstance.java b/net/minecraft/world/effect/MobEffectInstance.java
+index 5dd64fb6e88629c7cc9f110842d1825365113b3b..7a14b74938f675fa23be27c0458cbbc44506245f 100644
+--- a/net/minecraft/world/effect/MobEffectInstance.java
++++ b/net/minecraft/world/effect/MobEffectInstance.java
+@@ -8,8 +8,11 @@ import com.mojang.serialization.codecs.RecordCodecBuilder;
+ import io.netty.buffer.ByteBuf;
+ import it.unimi.dsi.fastutil.ints.Int2IntFunction;
+ import java.util.Optional;
++import java.util.concurrent.TimeUnit;
++import java.util.concurrent.atomic.AtomicLong;
+ import net.minecraft.core.Holder;
+ import net.minecraft.core.particles.ParticleOptions;
++import net.minecraft.core.registries.BuiltInRegistries;
+ import net.minecraft.network.RegistryFriendlyByteBuf;
+ import net.minecraft.network.codec.ByteBufCodecs;
+ import net.minecraft.network.codec.StreamCodec;
+@@ -24,6 +27,10 @@ import org.slf4j.Logger;
+ 
+ public class MobEffectInstance implements Comparable<MobEffectInstance> {
+     private static final Logger LOGGER = LogUtils.getLogger();
++    // Scissors start - sanitize unsafe custom instant potion amplifiers
++    private static final int MAX_SAFE_CUSTOM_INSTANT_POTION_AMPLIFIER = 1;
++    private static final AtomicLong NEXT_UNSAFE_CUSTOM_POTION_WARNING_NANOS = new AtomicLong();
++    // Scissors end - sanitize unsafe custom instant potion amplifiers
+     public static final int INFINITE_DURATION = -1;
+     public static final int MIN_AMPLIFIER = 0;
+     public static final int MAX_AMPLIFIER = 255;
+@@ -209,6 +216,45 @@ public class MobEffectInstance implements Comparable<MobEffectInstance> {
+         return this.amplifier;
+     }
+ 
++    // Scissors start - sanitize unsafe custom instant potion amplifiers
++    /**
++     * Returns an effect safe to carry in potion contents. Vanilla instant health and damage potions use at most
++     * amplifier {@code 1}; larger custom values can overflow the shift-based effect calculation. Other effect types
++     * are unchanged.
++     */
++    public static MobEffectInstance sanitizeForPotion(final MobEffectInstance instance) {
++        if (!(instance.effect.value() instanceof HealOrHarmMobEffect)
++            || instance.amplifier <= MAX_SAFE_CUSTOM_INSTANT_POTION_AMPLIFIER) {
++            return instance;
++        }
++
++        MobEffectInstance sanitized = new MobEffectInstance(
++            instance.effect,
++            instance.duration,
++            MAX_SAFE_CUSTOM_INSTANT_POTION_AMPLIFIER,
++            instance.ambient,
++            instance.visible,
++            instance.showIcon,
++            instance.hiddenEffect == null ? null : new MobEffectInstance(instance.hiddenEffect)
++        );
++        warnUnsafeCustomPotionAmplifier(instance);
++        return sanitized;
++    }
++
++    private static void warnUnsafeCustomPotionAmplifier(final MobEffectInstance instance) {
++        long now = System.nanoTime();
++        long nextWarning = NEXT_UNSAFE_CUSTOM_POTION_WARNING_NANOS.get();
++        if (now >= nextWarning && NEXT_UNSAFE_CUSTOM_POTION_WARNING_NANOS.compareAndSet(nextWarning, now + TimeUnit.SECONDS.toNanos(10L))) {
++            LOGGER.warn(
++                "Reduced unsafe custom potion effect {} amplifier from {} to {}; higher instant health/damage amplifiers can overflow effect arithmetic",
++                BuiltInRegistries.MOB_EFFECT.getKey(instance.effect.value()),
++                instance.amplifier,
++                MAX_SAFE_CUSTOM_INSTANT_POTION_AMPLIFIER
++            );
++        }
++    }
++    // Scissors end - sanitize unsafe custom instant potion amplifiers
++
+     public boolean isAmbient() {
+         return this.ambient;
+     }
+diff --git a/net/minecraft/world/entity/AreaEffectCloud.java b/net/minecraft/world/entity/AreaEffectCloud.java
+index 792fa8e09ecfd244d289e1e12c5edc41895e0f0a..d01c877595fb4b417f299cd9932ad8c31061cbdb 100644
+--- a/net/minecraft/world/entity/AreaEffectCloud.java
++++ b/net/minecraft/world/entity/AreaEffectCloud.java
+@@ -110,7 +110,9 @@ public class AreaEffectCloud extends Entity implements TraceableEntity {
+     }
+ 
+     public void setPotionContents(final PotionContents contents) {
+-        this.potionContents = contents;
++        // Scissors start - eliminate unsafe instant potion amplifiers
++        this.potionContents = contents.sanitizeUnsafeEffects();
++        // Scissors end - eliminate unsafe instant potion amplifiers
+         this.updateParticle();
+     }
+ 
+diff --git a/net/minecraft/world/entity/projectile/arrow/Arrow.java b/net/minecraft/world/entity/projectile/arrow/Arrow.java
+index cd7a719bf922246a2497cc5ad897c306379e40df..57e151d742b60794e1508ff13d792f0785679315 100644
+--- a/net/minecraft/world/entity/projectile/arrow/Arrow.java
++++ b/net/minecraft/world/entity/projectile/arrow/Arrow.java
+@@ -46,7 +46,9 @@ public class Arrow extends AbstractArrow {
+     }
+ 
+     public void setPotionContents(final PotionContents potionContents) {
+-        this.getPickupItemStackOrigin().set(DataComponents.POTION_CONTENTS, potionContents);
++        // Scissors start - eliminate unsafe instant potion amplifiers
++        this.getPickupItemStackOrigin().set(DataComponents.POTION_CONTENTS, potionContents.sanitizeUnsafeEffects());
++        // Scissors end - eliminate unsafe instant potion amplifiers
+         this.updateColor();
+     }
+ 
+diff --git a/net/minecraft/world/item/ItemStack.java b/net/minecraft/world/item/ItemStack.java
+index 216c4115e809ff72ce572d3795333529918bb93b..d512197475597b3d7f5ab2f77c7a50bff0c65392 100644
+--- a/net/minecraft/world/item/ItemStack.java
++++ b/net/minecraft/world/item/ItemStack.java
+@@ -407,6 +407,18 @@ public final class ItemStack implements DataComponentHolder, ItemInstance {
+      */
+     public static ItemStack sanitizeUnsafeData(final ItemStack itemStack) {
+         ItemStack result = sanitizeNestedItems(itemStack);
++
++        net.minecraft.world.item.alchemy.PotionContents potionContents = result.get(DataComponents.POTION_CONTENTS);
++        if (potionContents != null) {
++            net.minecraft.world.item.alchemy.PotionContents sanitizedPotionContents = potionContents.sanitizeUnsafeEffects();
++            if (sanitizedPotionContents != potionContents) {
++                if (result == itemStack) {
++                    result = itemStack.copy();
++                }
++                result.set(DataComponents.POTION_CONTENTS, sanitizedPotionContents);
++            }
++        }
++
+         TypedEntityData<net.minecraft.world.entity.EntityType<?>> entityData = result.get(DataComponents.ENTITY_DATA);
+ 
+         // There is no vanilla area-effect-cloud spawn egg. Restore the concrete egg's registered entity rather than
+diff --git a/net/minecraft/world/item/alchemy/PotionContents.java b/net/minecraft/world/item/alchemy/PotionContents.java
+index d67173c468a22d8203f3313bfd25ae23a7e0323a..483c90ee3659f45041b9ed02ddefb3d86b75d41f 100644
+--- a/net/minecraft/world/item/alchemy/PotionContents.java
++++ b/net/minecraft/world/item/alchemy/PotionContents.java
+@@ -66,6 +66,25 @@ public record PotionContents(Optional<Holder<Potion>> potion, Optional<Integer>
+         PotionContents::new
+     );
+ 
++    // Scissors start - eliminate unsafe custom instant potion amplifiers at every potion boundary
++    public PotionContents sanitizeUnsafeEffects() {
++        List<MobEffectInstance> sanitizedEffects = null;
++        for (int i = 0; i < this.customEffects.size(); i++) {
++            MobEffectInstance effect = this.customEffects.get(i);
++            MobEffectInstance sanitized = MobEffectInstance.sanitizeForPotion(effect);
++            if (sanitized != effect && sanitizedEffects == null) {
++                sanitizedEffects = new java.util.ArrayList<>(this.customEffects.subList(0, i));
++            }
++            if (sanitizedEffects != null) {
++                sanitizedEffects.add(sanitized);
++            }
++        }
++        return sanitizedEffects == null
++            ? this
++            : new PotionContents(this.potion, this.customColor, List.copyOf(sanitizedEffects), this.customName);
++    }
++    // Scissors end - eliminate unsafe custom instant potion amplifiers at every potion boundary
++
+     public PotionContents(final Holder<Potion> potion) {
+         this(Optional.of(potion), Optional.empty(), List.of(), Optional.empty());
+     }
+@@ -81,6 +100,12 @@ public record PotionContents(Optional<Holder<Potion>> potion, Optional<Integer>
+     }
+ 
+     public Iterable<MobEffectInstance> getAllEffects() {
++        // Scissors start - never expose an unsafe instant effect to a potion consumer
++        PotionContents sanitized = this.sanitizeUnsafeEffects();
++        if (sanitized != this) {
++            return sanitized.getAllEffects();
++        }
++        // Scissors end - never expose an unsafe instant effect to a potion consumer
+         if (this.potion.isEmpty()) {
+             return this.customEffects;
+         } else {
+@@ -91,6 +116,13 @@ public record PotionContents(Optional<Holder<Potion>> potion, Optional<Integer>
+     }
+ 
+     public void forEachEffect(final Consumer<MobEffectInstance> consumer, final float durationScale) {
++        // Scissors start - never apply an unsafe instant effect from programmatically constructed potion contents
++        PotionContents sanitized = this.sanitizeUnsafeEffects();
++        if (sanitized != this) {
++            sanitized.forEachEffect(consumer, durationScale);
++            return;
++        }
++        // Scissors end - never apply an unsafe instant effect from programmatically constructed potion contents
+         if (this.potion.isPresent()) {
+             for (MobEffectInstance effect : this.potion.get().value().getEffects()) {
+                 consumer.accept(effect.withScaledDuration(durationScale));
