@@ -1,0 +1,167 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Telesphoreo <me@telesphoreo.me>
+Date: Mon, 31 Aug 2026 19:47:50 -0400
+Subject: [PATCH] Test unsafe item damage type sanitization
+
+Cover the reported ViaBackwards raw damage-type ID and attack modifier, all vanilla invulnerability-bypassing types, the damage-source sink, storage and nesting, while preserving safe custom types and vanilla spear behavior.
+
+diff --git a/src/test/java/io/papermc/paper/item/UnsafeItemDamageTypeTest.java b/src/test/java/io/papermc/paper/item/UnsafeItemDamageTypeTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..26fee3b77731fb2de49336ad63e46002275f660b
+--- /dev/null
++++ b/src/test/java/io/papermc/paper/item/UnsafeItemDamageTypeTest.java
+@@ -0,0 +1,154 @@
++package io.papermc.paper.item;
++
++import java.util.List;
++import net.minecraft.core.Holder;
++import net.minecraft.core.component.DataComponents;
++import net.minecraft.core.registries.Registries;
++import net.minecraft.nbt.CompoundTag;
++import net.minecraft.nbt.NbtOps;
++import net.minecraft.nbt.Tag;
++import net.minecraft.resources.Identifier;
++import net.minecraft.resources.RegistryOps;
++import net.minecraft.resources.ResourceKey;
++import net.minecraft.tags.DamageTypeTags;
++import net.minecraft.world.damagesource.DamageSource;
++import net.minecraft.world.damagesource.DamageType;
++import net.minecraft.world.damagesource.DamageTypes;
++import net.minecraft.world.entity.EquipmentSlotGroup;
++import net.minecraft.world.entity.LivingEntity;
++import net.minecraft.world.entity.ai.attributes.AttributeModifier;
++import net.minecraft.world.entity.ai.attributes.Attributes;
++import net.minecraft.world.item.ItemStack;
++import net.minecraft.world.item.ItemStackTemplate;
++import net.minecraft.world.item.Items;
++import net.minecraft.world.item.component.BundleContents;
++import net.minecraft.world.item.component.CustomData;
++import net.minecraft.world.item.component.ItemAttributeModifiers;
++import org.bukkit.support.RegistryHelper;
++import org.bukkit.support.environment.AllFeatures;
++import org.junit.jupiter.api.Test;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertFalse;
++import static org.junit.jupiter.api.Assertions.assertNotNull;
++import static org.junit.jupiter.api.Assertions.assertNotSame;
++import static org.junit.jupiter.api.Assertions.assertNull;
++import static org.junit.jupiter.api.Assertions.assertSame;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++import static org.mockito.Mockito.mock;
++import static org.mockito.Mockito.when;
++
++@AllFeatures
++class UnsafeItemDamageTypeTest {
++
++    @Test
++    void reportedViaBackupRestoresOutOfWorldInThisVersion() {
++        Holder.Reference<DamageType> restored = RegistryHelper.registryAccess()
++            .lookupOrThrow(Registries.DAMAGE_TYPE)
++            .get(32)
++            .orElseThrow();
++
++        assertEquals("minecraft:out_of_world", restored.getRegisteredName());
++        assertTrue(restored.is(DamageTypeTags.BYPASSES_INVULNERABILITY));
++    }
++
++    @Test
++    void sanitizesReportedCreativeKillingPotionAndPreservesSafeRemainder() {
++        ItemStack potion = reportedPotion(damageType(DamageTypes.FELL_OUT_OF_WORLD));
++        ItemAttributeModifiers attackModifiers = potion.get(DataComponents.ATTRIBUTE_MODIFIERS);
++        CustomData viaData = potion.get(DataComponents.CUSTOM_DATA);
++
++        ItemStack sanitized = ItemStack.sanitizeUnsafeData(potion);
++
++        assertNotSame(potion, sanitized);
++        assertNull(sanitized.get(DataComponents.DAMAGE_TYPE));
++        assertSame(attackModifiers, sanitized.get(DataComponents.ATTRIBUTE_MODIFIERS));
++        assertEquals(viaData, sanitized.get(DataComponents.CUSTOM_DATA));
++        assertTrue(potion.get(DataComponents.DAMAGE_TYPE).is(DamageTypes.FELL_OUT_OF_WORLD));
++    }
++
++    @Test
++    void removesEveryVanillaDamageTypeThatBypassesInvulnerability() {
++        for (ResourceKey<DamageType> type : List.of(DamageTypes.GENERIC_KILL, DamageTypes.FELL_OUT_OF_WORLD)) {
++            ItemStack potion = reportedPotion(damageType(type));
++
++            assertNull(ItemStack.sanitizeUnsafeData(potion).get(DataComponents.DAMAGE_TYPE), type.identifier().toString());
++        }
++    }
++
++    @Test
++    void finalDamageSourceSinkRejectsUnsanitizedBypassType() {
++        Holder<DamageType> playerAttack = damageType(DamageTypes.PLAYER_ATTACK);
++        ItemStack rawPotion = reportedPotion(damageType(DamageTypes.FELL_OUT_OF_WORLD));
++        LivingEntity attacker = mock(LivingEntity.class);
++        DamageSource fallback = new DamageSource(playerAttack, attacker);
++        when(attacker.createDamageSource()).thenReturn(fallback);
++
++        assertSame(fallback, rawPotion.getDamageSource(attacker));
++        assertTrue(rawPotion.get(DataComponents.DAMAGE_TYPE).is(DamageTypes.FELL_OUT_OF_WORLD));
++    }
++
++    @Test
++    void preservesSafeCustomAndVanillaDamageTypes() {
++        ItemStack safeCustom = reportedPotion(damageType(DamageTypes.PLAYER_ATTACK));
++        ItemStack spear = new ItemStack(Items.IRON_SPEAR);
++        LivingEntity attacker = mock(LivingEntity.class);
++
++        assertSame(safeCustom, ItemStack.sanitizeUnsafeData(safeCustom));
++        assertTrue(safeCustom.getDamageSource(attacker).is(DamageTypes.PLAYER_ATTACK));
++        assertSame(spear, ItemStack.sanitizeUnsafeData(spear));
++        assertNotNull(spear.get(DataComponents.DAMAGE_TYPE));
++        assertTrue(spear.get(DataComponents.DAMAGE_TYPE).is(DamageTypes.SPEAR));
++    }
++
++    @Test
++    void restoresVanillaDamageTypeAfterUnsafeOverride() {
++        ItemStack spear = new ItemStack(Items.IRON_SPEAR);
++        spear.set(DataComponents.DAMAGE_TYPE, damageType(DamageTypes.GENERIC_KILL));
++
++        ItemStack sanitized = ItemStack.sanitizeUnsafeData(spear);
++
++        assertNotSame(spear, sanitized);
++        assertTrue(sanitized.get(DataComponents.DAMAGE_TYPE).is(DamageTypes.SPEAR));
++    }
++
++    @Test
++    void storageDecodeAndNestedItemsEliminateBypassType() {
++        ItemStack potion = reportedPotion(damageType(DamageTypes.FELL_OUT_OF_WORLD));
++        RegistryOps<Tag> ops = RegistryHelper.registryAccess().createSerializationContext(NbtOps.INSTANCE);
++        Tag encoded = ItemStack.CODEC.encodeStart(ops, potion).getOrThrow();
++
++        ItemStack loaded = ItemStack.CODEC.parse(ops, encoded).getOrThrow();
++        assertNull(loaded.get(DataComponents.DAMAGE_TYPE));
++
++        ItemStack bundle = new ItemStack(Items.BUNDLE);
++        bundle.set(DataComponents.BUNDLE_CONTENTS, new BundleContents(List.of(ItemStackTemplate.fromNonEmptyStack(potion))));
++        ItemStack nested = ItemStack.sanitizeUnsafeData(bundle).get(DataComponents.BUNDLE_CONTENTS).items().getFirst().create();
++        assertNull(nested.get(DataComponents.DAMAGE_TYPE));
++        assertFalse(nested.get(DataComponents.ATTRIBUTE_MODIFIERS).modifiers().isEmpty());
++    }
++
++    private static ItemStack reportedPotion(final Holder<DamageType> damageType) {
++        ItemStack potion = new ItemStack(Items.SPLASH_POTION);
++        potion.set(DataComponents.DAMAGE_TYPE, damageType);
++        potion.set(
++            DataComponents.ATTRIBUTE_MODIFIERS,
++            ItemAttributeModifiers.builder()
++                .add(
++                    Attributes.ATTACK_DAMAGE,
++                    new AttributeModifier(Identifier.withDefaultNamespace("attack_damage"), 50.0, AttributeModifier.Operation.ADD_VALUE),
++                    EquipmentSlotGroup.MAINHAND
++                )
++                .build()
++        );
++
++        CompoundTag viaData = new CompoundTag();
++        viaData.putByte("VV|custom_data", (byte)1);
++        potion.set(DataComponents.CUSTOM_DATA, CustomData.of(viaData));
++        return potion;
++    }
++
++    private static Holder.Reference<DamageType> damageType(final ResourceKey<DamageType> key) {
++        return RegistryHelper.registryAccess().lookupOrThrow(Registries.DAMAGE_TYPE).getOrThrow(key);
++    }
++}
