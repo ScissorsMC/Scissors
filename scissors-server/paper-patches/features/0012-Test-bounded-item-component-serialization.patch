@@ -344,22 +344,26 @@ index acb24f095064b8cc53949ea02c94d0f10b8c78ab..2f638becfb96b00c9133d7c289ecc6f0
  
 diff --git a/src/test/java/io/papermc/paper/item/OversizedItemComponentTest.java b/src/test/java/io/papermc/paper/item/OversizedItemComponentTest.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..2d1a57fc57024625035962bfe62615f117fad2b3
+index 0000000000000000000000000000000000000000..a845ea712e2bf5303e7accada74574283c497368
 --- /dev/null
 +++ b/src/test/java/io/papermc/paper/item/OversizedItemComponentTest.java
-@@ -0,0 +1,155 @@
+@@ -0,0 +1,183 @@
 +package io.papermc.paper.item;
 +
 +import io.netty.buffer.Unpooled;
++import java.util.LinkedHashMap;
 +import java.util.List;
++import java.util.Map;
 +import java.util.stream.IntStream;
 +import net.minecraft.advancements.predicates.DataComponentMatchers;
 +import net.minecraft.advancements.predicates.ItemPredicate;
++import net.minecraft.core.Holder;
 +import net.minecraft.core.component.DataComponentExactPredicate;
 +import net.minecraft.core.component.DataComponentMap;
 +import net.minecraft.core.component.DataComponentPatch;
 +import net.minecraft.core.component.DataComponentType;
 +import net.minecraft.core.component.DataComponents;
++import net.minecraft.core.registries.Registries;
 +import net.minecraft.nbt.CompoundTag;
 +import net.minecraft.nbt.IntArrayTag;
 +import net.minecraft.nbt.NbtOps;
@@ -368,12 +372,17 @@ index 0000000000000000000000000000000000000000..2d1a57fc57024625035962bfe62615f1
 +import net.minecraft.resources.RegistryOps;
 +import net.minecraft.world.LockCode;
 +import net.minecraft.world.item.ItemStack;
++import net.minecraft.world.item.Items;
 +import net.minecraft.world.item.component.CustomModelData;
++import net.minecraft.world.item.component.DebugStickState;
++import net.minecraft.world.level.block.Block;
++import net.minecraft.world.level.block.state.properties.Property;
 +import org.bukkit.support.RegistryHelper;
 +import org.bukkit.support.environment.AllFeatures;
 +import org.junit.jupiter.api.Test;
 +
 +import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertFalse;
 +import static org.junit.jupiter.api.Assertions.assertNull;
 +import static org.junit.jupiter.api.Assertions.assertTrue;
 +
@@ -381,6 +390,25 @@ index 0000000000000000000000000000000000000000..2d1a57fc57024625035962bfe62615f1
 +class OversizedItemComponentTest {
 +
 +    private static final int EXPLOIT_LIST_SIZE = 9_000;
++
++    @Test
++    void keepsVanillaDebugStickStateDuringNetworkDecode() {
++        assertTrue(ItemStack.validateStrict(new ItemStack(Items.DEBUG_STICK)).isSuccess());
++        final Map<Holder<Block>, Property<?>> properties = new LinkedHashMap<>();
++        RegistryHelper.registryAccess().lookupOrThrow(Registries.BLOCK).listElements().forEach(block -> {
++            block.value().getStateDefinition().getProperties().stream().findFirst().ifPresent(property -> properties.put(block, property));
++        });
++        final DebugStickState state = new DebugStickState(Map.copyOf(properties));
++        final RegistryFriendlyByteBuf buffer = new RegistryFriendlyByteBuf(Unpooled.buffer(), RegistryHelper.registryAccess());
++        writeDelimited(buffer, DataComponents.DEBUG_STICK_STATE, state);
++        final RegistryFriendlyByteBuf framed = new RegistryFriendlyByteBuf(Unpooled.buffer(), RegistryHelper.registryAccess());
++        framed.writeVarInt(1);
++        framed.writeVarInt(0);
++        framed.writeBytes(buffer);
++        final DataComponentPatch decoded = DataComponentPatch.DELIMITED_STREAM_CODEC.decode(framed);
++        assertEquals(state, decoded.get(DataComponentMap.EMPTY, DataComponents.DEBUG_STICK_STATE));
++        assertFalse(decoded.wasSanitizedDuringDecode());
++    }
 +
 +    @Test
 +    void stripsOversizedLockBeforePersistentComponentDecode() {

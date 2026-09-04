@@ -6,7 +6,7 @@ Subject: [PATCH] Bound item component serialization work
 Reject or strip component values whose encoded structure exceeds a shared complexity budget before codec traversal can stall the server. Apply the same rule to persistent and network boundaries so alternate component carriers cannot bypass it.
 
 diff --git a/net/minecraft/core/component/DataComponentPatch.java b/net/minecraft/core/component/DataComponentPatch.java
-index e6de3f1c863b42522b7d0a46b2a314986d22dae9..8b02ebfd40e22545dc4be0a78ff4e6e5061209a2 100644
+index e6de3f1c863b42522b7d0a46b2a314986d22dae9..2bedd42856934bb20160f2434bc111c55c685622 100644
 --- a/net/minecraft/core/component/DataComponentPatch.java
 +++ b/net/minecraft/core/component/DataComponentPatch.java
 @@ -1,26 +1,46 @@
@@ -228,7 +228,7 @@ index e6de3f1c863b42522b7d0a46b2a314986d22dae9..8b02ebfd40e22545dc4be0a78ff4e6e5
                  } catch (final Exception e) {
                      throw new RuntimeException("Error encoding component " + type, e);
                  }
-@@ -162,8 +242,163 @@ public final class DataComponentPatch {
+@@ -162,8 +242,171 @@ public final class DataComponentPatch {
          };
      }
  
@@ -296,6 +296,14 @@ index e6de3f1c863b42522b7d0a46b2a314986d22dae9..8b02ebfd40e22545dc4be0a78ff4e6e5
 +                sanitized.put(entry.getKey(), value);
 +                continue;
 +            }
++            // A debug stick legitimately accumulates one selected property per block type. Its codec restricts both
++            // keys and values to registered blocks and their real properties, so registry size already bounds it.
++            // Applying the generic structural budget would erase vanilla-generated state when creative inventory
++            // synchronization sends a sufficiently used stick back to the server.
++            if (entry.getKey() == DataComponents.DEBUG_STICK_STATE) {
++                sanitized.put(entry.getKey(), value);
++                continue;
++            }
 +
 +            final io.papermc.paper.util.CountingOps.Value complexity;
 +            try {
@@ -339,7 +347,7 @@ index e6de3f1c863b42522b7d0a46b2a314986d22dae9..8b02ebfd40e22545dc4be0a78ff4e6e5
 +
 +    private static int maxUntrustedNetworkBytes(final DataComponentType<?> type) {
 +        Identifier id = BuiltInRegistries.DATA_COMPONENT_TYPE.getKey(type);
-+        if (id != null && (id.getPath().equals("written_book_content") || id.getPath().equals("writable_book_content"))) {
++        if (type == DataComponents.DEBUG_STICK_STATE || id != null && (id.getPath().equals("written_book_content") || id.getPath().equals("writable_book_content"))) {
 +            return MAX_UNTRUSTED_BOOK_COMPONENT_BYTES;
 +        }
 +        return MAX_UNTRUSTED_COMPONENT_BYTES;
