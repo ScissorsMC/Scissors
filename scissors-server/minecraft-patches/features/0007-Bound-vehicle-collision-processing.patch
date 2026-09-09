@@ -6,7 +6,7 @@ Subject: [PATCH] Bound vehicle collision processing
 Boat and both minecart movement implementations previously materialized and processed every nearby entity. Stop entity lookup after the configured limit or a hard cap of 16, preserve the vehicles, and rate-limit overflow logging.
 
 diff --git a/net/minecraft/world/entity/vehicle/VehicleEntity.java b/net/minecraft/world/entity/vehicle/VehicleEntity.java
-index 96b0fa2ebab15a939a5162d23b3ad9b92365d818..3cc3d87b9c0701d0907f4ebcc9a29bf898afe0b5 100644
+index 96b0fa2ebab15a939a5162d23b3ad9b92365d818..fa943856f1117144679d5624d053e0f641438a24 100644
 --- a/net/minecraft/world/entity/vehicle/VehicleEntity.java
 +++ b/net/minecraft/world/entity/vehicle/VehicleEntity.java
 @@ -1,10 +1,17 @@
@@ -27,7 +27,7 @@ index 96b0fa2ebab15a939a5162d23b3ad9b92365d818..3cc3d87b9c0701d0907f4ebcc9a29bf8
  import net.minecraft.world.damagesource.DamageSource;
  import net.minecraft.world.entity.Entity;
  import net.minecraft.world.entity.EntityType;
-@@ -16,8 +23,15 @@ import net.minecraft.world.level.Explosion;
+@@ -16,8 +23,16 @@ import net.minecraft.world.level.Explosion;
  import net.minecraft.world.level.Level;
  import net.minecraft.world.level.gameevent.GameEvent;
  import net.minecraft.world.level.gamerules.GameRules;
@@ -38,12 +38,13 @@ index 96b0fa2ebab15a939a5162d23b3ad9b92365d818..3cc3d87b9c0701d0907f4ebcc9a29bf8
  public abstract class VehicleEntity extends Entity {
 +    private static final Logger LOGGER = LogUtils.getLogger();
 +    private static final int MAX_VEHICLE_COLLISIONS = 16;
-+    private static final long COLLISION_OVERFLOW_WARNING_INTERVAL = TimeUnit.SECONDS.toMillis(1L);
++    // Scissors - crowded vehicles can remain over the limit; keep repeat warnings infrequent across all vehicles.
++    private static final long COLLISION_OVERFLOW_WARNING_INTERVAL = TimeUnit.MINUTES.toMillis(5L);
 +    private static final AtomicLong NEXT_COLLISION_OVERFLOW_WARNING = new AtomicLong();
      protected static final EntityDataAccessor<Integer> DATA_ID_HURT = SynchedEntityData.defineId(VehicleEntity.class, EntityDataSerializers.INT);
      protected static final EntityDataAccessor<Integer> DATA_ID_HURTDIR = SynchedEntityData.defineId(VehicleEntity.class, EntityDataSerializers.INT);
      protected static final EntityDataAccessor<Float> DATA_ID_DAMAGE = SynchedEntityData.defineId(VehicleEntity.class, EntityDataSerializers.FLOAT);
-@@ -131,6 +145,59 @@ public abstract class VehicleEntity extends Entity {
+@@ -131,6 +146,59 @@ public abstract class VehicleEntity extends Entity {
          return this.entityData.get(DATA_ID_HURTDIR);
      }
  
@@ -70,7 +71,7 @@ index 96b0fa2ebab15a939a5162d23b3ad9b92365d818..3cc3d87b9c0701d0907f4ebcc9a29bf8
 +                && now >= nextWarning
 +                && NEXT_COLLISION_OVERFLOW_WARNING.compareAndSet(nextWarning, now + COLLISION_OVERFLOW_WARNING_INTERVAL)) {
 +                LOGGER.warn(
-+                    "Limited collision processing for {} with UUID {} at {} to {} entities",
++                    "Limited collision processing for {} with UUID {} at {} to {} entities. Suppressing further vehicle collision warnings for 5 minutes",
 +                    this.getType(),
 +                    this.getUUID(),
 +                    this.blockPosition().toShortString(),
@@ -117,7 +118,7 @@ index 3fcd534cee1f605a710ffc43eff4b5106c7dd40c..42625241c06e0713f634e99e7791e15e
              boolean addNewPassengers = !this.level().isClientSide() && !(this.getControllingPassenger() instanceof Player);
  
 diff --git a/net/minecraft/world/entity/vehicle/minecart/AbstractMinecart.java b/net/minecraft/world/entity/vehicle/minecart/AbstractMinecart.java
-index 5ad77636d0681d1f0341cff4482ba6ad52f3583b..d63739ecab7ca4c2ec75494d1530783b61c20255 100644
+index 30b99d9d0944399e6f3a74c4310cbf8f15cc5adc..d462b784ee38a6187a8da7407f047ca5d2b08e0d 100644
 --- a/net/minecraft/world/entity/vehicle/minecart/AbstractMinecart.java
 +++ b/net/minecraft/world/entity/vehicle/minecart/AbstractMinecart.java
 @@ -4,8 +4,10 @@ import com.google.common.collect.ImmutableList;

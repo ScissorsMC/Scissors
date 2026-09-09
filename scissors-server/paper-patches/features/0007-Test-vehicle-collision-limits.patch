@@ -6,10 +6,10 @@ Subject: [PATCH] Test vehicle collision limits
 
 diff --git a/src/test/java/io/papermc/paper/scissors/VehicleCollisionLimitTest.java b/src/test/java/io/papermc/paper/scissors/VehicleCollisionLimitTest.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..0a1dfce8b4e0c14954b965092257c31a429390b9
+index 0000000000000000000000000000000000000000..56bca0cc78f90204072f75677e8b5beb69c87ff2
 --- /dev/null
 +++ b/src/test/java/io/papermc/paper/scissors/VehicleCollisionLimitTest.java
-@@ -0,0 +1,69 @@
+@@ -0,0 +1,76 @@
 +package io.papermc.paper.scissors;
 +
 +import java.lang.reflect.InvocationTargetException;
@@ -27,6 +27,13 @@ index 0000000000000000000000000000000000000000..0a1dfce8b4e0c14954b965092257c31a
 +
 +@Normal
 +class VehicleCollisionLimitTest {
++
++    @Test
++    void limitsRepeatWarningsToEveryFiveMinutes() throws ReflectiveOperationException {
++        final var interval = VehicleEntity.class.getDeclaredField("COLLISION_OVERFLOW_WARNING_INTERVAL");
++        interval.setAccessible(true);
++        assertEquals(300_000L, interval.getLong(null));
++    }
 +
 +    @Test
 +    void honorsSmallerConfiguredLimit() {
