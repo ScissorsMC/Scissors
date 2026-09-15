@@ -46,11 +46,11 @@ index 20c1ebd9514b0e2b0e8014d052c9d760c5daaf28..b3f5496f0470e544e659fe1d43785e62
          return this.command;
      }
 diff --git a/net/minecraft/server/network/ServerGamePacketListenerImpl.java b/net/minecraft/server/network/ServerGamePacketListenerImpl.java
-index 7afc4d02dc051dc40c6225c1bb958c89ecbcc027..32cf2dd6f387f67d3694020b8d33a39c2a09cad6 100644
+index d2e184df998bd27a39567c4536bedfa261eae57c..240a6c8b3cf4978c71491bb474976f3b431af1a0 100644
 --- a/net/minecraft/server/network/ServerGamePacketListenerImpl.java
 +++ b/net/minecraft/server/network/ServerGamePacketListenerImpl.java
-@@ -270,6 +270,8 @@ public class ServerGamePacketListenerImpl
-     private static final int MAX_COMMAND_SUGGESTIONS = 1000;
+@@ -273,6 +273,8 @@ public class ServerGamePacketListenerImpl
+     private static final Component INVALID_COMMAND_SIGNATURE = Component.translatable("chat.disabled.invalid_command_signature").withStyle(ChatFormatting.RED);
      private static final long UNSAFE_CREATIVE_ITEM_LOG_INTERVAL = TimeUnit.SECONDS.toMillis(1L); // Scissors - rate-limit exploit logging
      private static final long NESTED_COMMAND_SUGGESTION_LOG_INTERVAL = TimeUnit.SECONDS.toMillis(1L); // Scissors - rate-limit exploit logging
 +    private static final double MAX_PRIVILEGED_PACKET_DISTANCE_SQUARED = 32.0 * 32.0; // Scissors - remote editor/query packets
@@ -58,7 +58,7 @@ index 7afc4d02dc051dc40c6225c1bb958c89ecbcc027..32cf2dd6f387f67d3694020b8d33a39c
      public ServerPlayer player;
      public final PlayerChunkSender chunkSender;
      private int tickCount;
-@@ -281,6 +283,7 @@ public class ServerGamePacketListenerImpl
+@@ -284,6 +286,7 @@ public class ServerGamePacketListenerImpl
      private final TickThrottler recipeSpamPackets = new TickThrottler(io.papermc.paper.configuration.GlobalConfiguration.get().spamLimiter.recipeSpamIncrement, io.papermc.paper.configuration.GlobalConfiguration.get().spamLimiter.recipeSpamLimit);
      private long lastUnsafeCreativeItemWarning; // Scissors - rate-limit exploit logging
      private long lastNestedCommandSuggestionWarning; // Scissors - rate-limit exploit logging
@@ -66,7 +66,7 @@ index 7afc4d02dc051dc40c6225c1bb958c89ecbcc027..32cf2dd6f387f67d3694020b8d33a39c
      private double firstGoodX;
      private double firstGoodY;
      private double firstGoodZ;
-@@ -961,9 +964,12 @@ public class ServerGamePacketListenerImpl
+@@ -925,9 +928,12 @@ public class ServerGamePacketListenerImpl
          if (!this.player.canUseGameMasterBlocks() && (!this.player.isCreative() || !this.player.getBukkitEntity().hasPermission("minecraft.commandblock"))) { // Paper - command block permission
              this.player.sendSystemMessage(Component.translatable("advMode.notAllowed"));
          } else {
@@ -80,7 +80,7 @@ index 7afc4d02dc051dc40c6225c1bb958c89ecbcc027..32cf2dd6f387f67d3694020b8d33a39c
              BlockEntity blockEntity = this.player.level().getBlockEntity(blockPos);
              if (blockEntity instanceof CommandBlockEntity commandBlockEntity) {
                  autoCommandBlock = commandBlockEntity;
-@@ -1022,7 +1028,12 @@ public class ServerGamePacketListenerImpl
+@@ -986,7 +992,12 @@ public class ServerGamePacketListenerImpl
          if (!this.player.canUseGameMasterBlocks() && (!this.player.isCreative() || !this.player.getBukkitEntity().hasPermission("minecraft.commandblock"))) { // Paper - command block permission
              this.player.sendSystemMessage(Component.translatable("advMode.notAllowed"));
          } else {
@@ -94,7 +94,7 @@ index 7afc4d02dc051dc40c6225c1bb958c89ecbcc027..32cf2dd6f387f67d3694020b8d33a39c
              if (commandBlock != null) {
                  String command = packet.getCommand();
                  commandBlock.setCommand(command);
-@@ -1194,6 +1205,9 @@ public class ServerGamePacketListenerImpl
+@@ -1158,6 +1169,9 @@ public class ServerGamePacketListenerImpl
          PacketUtils.ensureRunningOnSameThread(packet, this, this.player.level());
          if (this.player.canUseGameMasterBlocks()) {
              BlockPos blockPos = packet.getPos();
@@ -104,7 +104,7 @@ index 7afc4d02dc051dc40c6225c1bb958c89ecbcc027..32cf2dd6f387f67d3694020b8d33a39c
              BlockState state = this.player.level().getBlockState(blockPos);
              if (this.player.level().getBlockEntity(blockPos) instanceof StructureBlockEntity structure) {
                  structure.setMode(packet.getMode());
-@@ -1247,6 +1261,9 @@ public class ServerGamePacketListenerImpl
+@@ -1211,6 +1225,9 @@ public class ServerGamePacketListenerImpl
          PacketUtils.ensureRunningOnSameThread(packet, this, this.player.level());
          if (this.player.canUseGameMasterBlocks()) {
              BlockPos blockPos = packet.position();
@@ -114,7 +114,7 @@ index 7afc4d02dc051dc40c6225c1bb958c89ecbcc027..32cf2dd6f387f67d3694020b8d33a39c
              BlockState initialState = this.player.level().getBlockState(blockPos);
              if (this.player.level().getBlockEntity(blockPos) instanceof TestBlockEntity testBlock) {
                  testBlock.setMode(packet.mode());
-@@ -1261,10 +1278,25 @@ public class ServerGamePacketListenerImpl
+@@ -1225,10 +1242,25 @@ public class ServerGamePacketListenerImpl
      public void handleTestInstanceBlockAction(final ServerboundTestInstanceBlockActionPacket packet) {
          PacketUtils.ensureRunningOnSameThread(packet, this, this.player.level());
          BlockPos pos = packet.pos();
@@ -142,7 +142,7 @@ index 7afc4d02dc051dc40c6225c1bb958c89ecbcc027..32cf2dd6f387f67d3694020b8d33a39c
                  if (packet.action() == ServerboundTestInstanceBlockActionPacket.Action.RESET) {
                      blockEntity.resetTest(this.player::sendSystemMessage);
                  } else if (packet.action() == ServerboundTestInstanceBlockActionPacket.Action.SAVE) {
-@@ -1306,6 +1338,9 @@ public class ServerGamePacketListenerImpl
+@@ -1270,6 +1302,9 @@ public class ServerGamePacketListenerImpl
          PacketUtils.ensureRunningOnSameThread(packet, this, this.player.level());
          if (this.player.canUseGameMasterBlocks()) {
              BlockPos blockPos = packet.getPos();
@@ -152,7 +152,7 @@ index 7afc4d02dc051dc40c6225c1bb958c89ecbcc027..32cf2dd6f387f67d3694020b8d33a39c
              BlockState state = this.player.level().getBlockState(blockPos);
              if (this.player.level().getBlockEntity(blockPos) instanceof JigsawBlockEntity jigsaw) {
                  jigsaw.setName(packet.getName());
-@@ -1326,6 +1361,13 @@ public class ServerGamePacketListenerImpl
+@@ -1290,6 +1325,13 @@ public class ServerGamePacketListenerImpl
          PacketUtils.ensureRunningOnSameThread(packet, this, this.player.level());
          if (this.player.canUseGameMasterBlocks()) {
              BlockPos blockPos = packet.getPos();
@@ -166,7 +166,7 @@ index 7afc4d02dc051dc40c6225c1bb958c89ecbcc027..32cf2dd6f387f67d3694020b8d33a39c
              if (this.player.level().getBlockEntity(blockPos) instanceof JigsawBlockEntity jigsaw) {
                  jigsaw.generate(this.player.level(), packet.levels(), packet.keepJigsaws());
              }
-@@ -1449,7 +1491,7 @@ public class ServerGamePacketListenerImpl
+@@ -1413,7 +1455,7 @@ public class ServerGamePacketListenerImpl
          PacketUtils.ensureRunningOnSameThread(packet, this, this.player.level());
          if (this.player.permissions().hasPermission(Permissions.COMMANDS_GAMEMASTER)) {
              Entity entity = this.player.level().getEntity(packet.getEntityId());
@@ -175,7 +175,7 @@ index 7afc4d02dc051dc40c6225c1bb958c89ecbcc027..32cf2dd6f387f67d3694020b8d33a39c
                  try (ProblemReporter.ScopedCollector reporter = new ProblemReporter.ScopedCollector(entity.problemPath(), LOGGER)) {
                      TagValueOutput output = TagValueOutput.createWithContext(reporter, entity.registryAccess());
                      entity.saveWithoutId(output);
-@@ -1473,13 +1515,48 @@ public class ServerGamePacketListenerImpl
+@@ -1437,13 +1479,48 @@ public class ServerGamePacketListenerImpl
      @Override
      public void handleBlockEntityTagQuery(final ServerboundBlockEntityTagQueryPacket packet) {
          PacketUtils.ensureRunningOnSameThread(packet, this, this.player.level());
@@ -226,7 +226,7 @@ index 7afc4d02dc051dc40c6225c1bb958c89ecbcc027..32cf2dd6f387f67d3694020b8d33a39c
      public void handleMovePlayer(final ServerboundMovePlayerPacket packet) {
          PacketUtils.ensureRunningOnSameThread(packet, this, this.player.level());
 diff --git a/net/minecraft/world/level/block/entity/TestInstanceBlockEntity.java b/net/minecraft/world/level/block/entity/TestInstanceBlockEntity.java
-index 5b9fafbe1276cca32a8a120889d95b895cfbbe1b..579eddc9e6743a07b0fd789b11cdb865db0bb00d 100644
+index 1382fb292f08e2633fbabd5cabf477b3b460c779..847c226ce76b3dacdb15fc33ca6c61496f0e1eb2 100644
 --- a/net/minecraft/world/level/block/entity/TestInstanceBlockEntity.java
 +++ b/net/minecraft/world/level/block/entity/TestInstanceBlockEntity.java
 @@ -8,6 +8,8 @@ import java.nio.file.Path;

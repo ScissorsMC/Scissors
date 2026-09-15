@@ -6,7 +6,7 @@ Subject: [PATCH] Sanitize overflowing instant potion amplifiers
 Cap custom instant health and damage potion amplifiers at the largest vanilla level, and use saturating arithmetic at the effect sink so raw callers cannot turn healing negative through an overflowing shift.
 
 diff --git a/net/minecraft/world/effect/HealOrHarmMobEffect.java b/net/minecraft/world/effect/HealOrHarmMobEffect.java
-index f5e89c81a4aae3cbbe85e0ebb0ac1adfc51f0de3..4f68559f79650b8528eb2daf95df3673dca3c5f6 100644
+index 9afd06d4244672f2b9f830e163b0ce19387557f1..780a12b0d5f17df945f6dbe1c4b9f93774d31b6c 100644
 --- a/net/minecraft/world/effect/HealOrHarmMobEffect.java
 +++ b/net/minecraft/world/effect/HealOrHarmMobEffect.java
 @@ -1,6 +1,7 @@
@@ -33,7 +33,7 @@ index f5e89c81a4aae3cbbe85e0ebb0ac1adfc51f0de3..4f68559f79650b8528eb2daf95df3673
          return true;
 @@ -35,10 +38,10 @@ class HealOrHarmMobEffect extends InstantaneousMobEffect {
      ) {
-         if (!new io.papermc.paper.event.entity.EntityEffectTickEvent(mob.getBukkitLivingEntity(), org.bukkit.craftbukkit.potion.CraftPotionEffectType.minecraftToBukkit(this), amplification).callEvent()) { return; } // Paper - Add EntityEffectTickEvent
+         if (!new io.papermc.paper.event.entity.EntityEffectTickEvent(mob.getBukkitEntity(), org.bukkit.craftbukkit.potion.CraftPotionEffectType.minecraftToBukkit(this), amplification).callEvent()) { return; } // Paper - Add EntityEffectTickEvent
          if (this.isHarm == mob.isInvertedHealAndHarm()) {
 -            int amount = (int)(scale * (4 << amplification) + 0.5);
 +            int amount = calculateEffectAmount(4, amplification, scale); // Scissors - prevent amplifier shift overflow
@@ -67,7 +67,7 @@ index f5e89c81a4aae3cbbe85e0ebb0ac1adfc51f0de3..4f68559f79650b8528eb2daf95df3673
 +    // Scissors end - prevent instant health/damage amplifier shift overflow
  }
 diff --git a/net/minecraft/world/effect/MobEffectInstance.java b/net/minecraft/world/effect/MobEffectInstance.java
-index 5dd64fb6e88629c7cc9f110842d1825365113b3b..7a14b74938f675fa23be27c0458cbbc44506245f 100644
+index 8ed9dc186580b438da202a978ac883daca732a6e..ae86de1dae1c2e55e8355fc4919f285b3bad42ee 100644
 --- a/net/minecraft/world/effect/MobEffectInstance.java
 +++ b/net/minecraft/world/effect/MobEffectInstance.java
 @@ -8,8 +8,11 @@ import com.mojang.serialization.codecs.RecordCodecBuilder;
@@ -140,7 +140,7 @@ index 5dd64fb6e88629c7cc9f110842d1825365113b3b..7a14b74938f675fa23be27c0458cbbc4
          return this.ambient;
      }
 diff --git a/net/minecraft/world/entity/AreaEffectCloud.java b/net/minecraft/world/entity/AreaEffectCloud.java
-index 792fa8e09ecfd244d289e1e12c5edc41895e0f0a..d01c877595fb4b417f299cd9932ad8c31061cbdb 100644
+index 1aa93eac2c19f6599613cdb4db1f5884d1890026..569a77dc71bf16f78ed75482ed018b5b1ce5246d 100644
 --- a/net/minecraft/world/entity/AreaEffectCloud.java
 +++ b/net/minecraft/world/entity/AreaEffectCloud.java
 @@ -110,7 +110,9 @@ public class AreaEffectCloud extends Entity implements TraceableEntity {
@@ -155,10 +155,10 @@ index 792fa8e09ecfd244d289e1e12c5edc41895e0f0a..d01c877595fb4b417f299cd9932ad8c3
      }
  
 diff --git a/net/minecraft/world/entity/projectile/arrow/Arrow.java b/net/minecraft/world/entity/projectile/arrow/Arrow.java
-index cd7a719bf922246a2497cc5ad897c306379e40df..57e151d742b60794e1508ff13d792f0785679315 100644
+index e9199464cebb0d704c02cf4fcf8c00343ec824c5..f66ff7760a0e5102a3720fc36e2559750ca46e16 100644
 --- a/net/minecraft/world/entity/projectile/arrow/Arrow.java
 +++ b/net/minecraft/world/entity/projectile/arrow/Arrow.java
-@@ -46,7 +46,9 @@ public class Arrow extends AbstractArrow {
+@@ -47,7 +47,9 @@ public class Arrow extends AbstractArrow {
      }
  
      public void setPotionContents(final PotionContents potionContents) {
@@ -170,10 +170,10 @@ index cd7a719bf922246a2497cc5ad897c306379e40df..57e151d742b60794e1508ff13d792f07
      }
  
 diff --git a/net/minecraft/world/item/ItemStack.java b/net/minecraft/world/item/ItemStack.java
-index 216c4115e809ff72ce572d3795333529918bb93b..d512197475597b3d7f5ab2f77c7a50bff0c65392 100644
+index b0e04d8c79e8e52a905269f6a852a4984424740b..52bad3f30745b7d81d881f433c5d356869efae09 100644
 --- a/net/minecraft/world/item/ItemStack.java
 +++ b/net/minecraft/world/item/ItemStack.java
-@@ -407,6 +407,18 @@ public final class ItemStack implements DataComponentHolder, ItemInstance {
+@@ -408,6 +408,18 @@ public final class ItemStack implements DataComponentHolder, ItemInstance {
       */
      public static ItemStack sanitizeUnsafeData(final ItemStack itemStack) {
          ItemStack result = sanitizeNestedItems(itemStack);
@@ -193,10 +193,10 @@ index 216c4115e809ff72ce572d3795333529918bb93b..d512197475597b3d7f5ab2f77c7a50bf
  
          // There is no vanilla area-effect-cloud spawn egg. Restore the concrete egg's registered entity rather than
 diff --git a/net/minecraft/world/item/alchemy/PotionContents.java b/net/minecraft/world/item/alchemy/PotionContents.java
-index d67173c468a22d8203f3313bfd25ae23a7e0323a..483c90ee3659f45041b9ed02ddefb3d86b75d41f 100644
+index c8b2a548468458cccd0715dc583c20e4203ff1d2..32b5d8a3b93047622e4f22336b297cddd8cd798a 100644
 --- a/net/minecraft/world/item/alchemy/PotionContents.java
 +++ b/net/minecraft/world/item/alchemy/PotionContents.java
-@@ -66,6 +66,25 @@ public record PotionContents(Optional<Holder<Potion>> potion, Optional<Integer>
+@@ -67,6 +67,25 @@ public record PotionContents(Optional<Holder<Potion>> potion, Optional<Integer>
          PotionContents::new
      );
  
@@ -222,7 +222,7 @@ index d67173c468a22d8203f3313bfd25ae23a7e0323a..483c90ee3659f45041b9ed02ddefb3d8
      public PotionContents(final Holder<Potion> potion) {
          this(Optional.of(potion), Optional.empty(), List.of(), Optional.empty());
      }
-@@ -81,6 +100,12 @@ public record PotionContents(Optional<Holder<Potion>> potion, Optional<Integer>
+@@ -90,6 +109,12 @@ public record PotionContents(Optional<Holder<Potion>> potion, Optional<Integer>
      }
  
      public Iterable<MobEffectInstance> getAllEffects() {
@@ -235,7 +235,7 @@ index d67173c468a22d8203f3313bfd25ae23a7e0323a..483c90ee3659f45041b9ed02ddefb3d8
          if (this.potion.isEmpty()) {
              return this.customEffects;
          } else {
-@@ -91,6 +116,13 @@ public record PotionContents(Optional<Holder<Potion>> potion, Optional<Integer>
+@@ -100,6 +125,13 @@ public record PotionContents(Optional<Holder<Potion>> potion, Optional<Integer>
      }
  
      public void forEachEffect(final Consumer<MobEffectInstance> consumer, final float durationScale) {

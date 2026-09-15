@@ -6,19 +6,24 @@ Subject: [PATCH] Test vehicle collision limits
 
 diff --git a/src/test/java/io/papermc/paper/scissors/MinecartPopulationLimitTest.java b/src/test/java/io/papermc/paper/scissors/MinecartPopulationLimitTest.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..0f9f5f3c543468ee3366e0825934c7ea52dc440e
+index 0000000000000000000000000000000000000000..97f44354644bf8170fbbda262896632681b8b5d5
 --- /dev/null
 +++ b/src/test/java/io/papermc/paper/scissors/MinecartPopulationLimitTest.java
-@@ -0,0 +1,281 @@
+@@ -0,0 +1,319 @@
 +package io.papermc.paper.scissors;
 +
-+import ca.spottedleaf.moonrise.patches.chunk_system.level.entity.ChunkEntitySlices;
-+import ca.spottedleaf.moonrise.patches.chunk_system.level.entity.EntityLookup;
++import net.minecraft.world.level.entity.PersistentEntitySectionManager;
++import net.minecraft.world.level.entity.ChunkEntities;
++import net.minecraft.world.level.entity.Visibility;
++import net.minecraft.world.level.chunk.storage.EntityStorage;
++import java.util.HashMap;
++import java.util.Map;
++import java.util.concurrent.CompletableFuture;
++import org.bukkit.craftbukkit.event.CraftEventFactory;
 +import io.papermc.paper.configuration.WorldConfiguration;
 +import java.util.ArrayList;
 +import java.util.List;
 +import java.util.concurrent.atomic.AtomicInteger;
-+import net.minecraft.server.level.FullChunkStatus;
 +import net.minecraft.server.level.ServerLevel;
 +import net.minecraft.world.entity.Entity;
 +import net.minecraft.world.entity.EntityTypes;
@@ -51,12 +56,26 @@ index 0000000000000000000000000000000000000000..0f9f5f3c543468ee3366e0825934c7ea
 +import static org.mockito.ArgumentMatchers.any;
 +import static org.mockito.Mockito.doAnswer;
 +import static org.mockito.Mockito.mock;
++import static org.mockito.Mockito.mockStatic;
 +import static org.mockito.Mockito.never;
 +import static org.mockito.Mockito.verify;
 +import static org.mockito.Mockito.when;
 +
 +@Normal
 +class MinecartPopulationLimitTest {
++    private org.mockito.MockedStatic<org.spigotmc.AsyncCatcher> threadCheck;
++
++    @org.junit.jupiter.api.BeforeEach
++    void useTestThread() {
++        // The real section manager requires the server thread. This fixture does not start a server.
++        this.threadCheck = mockStatic(org.spigotmc.AsyncCatcher.class);
++    }
++
++    @org.junit.jupiter.api.AfterEach
++    void restoreThreadCheck() {
++        this.threadCheck.close();
++    }
++
 +    @Test
 +    void cancelsSpawnsAfterOneHundredWithoutRemovingAnyCarts() throws ReflectiveOperationException {
 +        final Fixture fixture = new Fixture();
@@ -67,13 +86,40 @@ index 0000000000000000000000000000000000000000..0f9f5f3c543468ee3366e0825934c7ea
 +            assertFalse(cart.isRemoved());
 +            assertEquals(Math.min(i + 1, 100), fixture.count(0, 0));
 +            if (i >= 100) {
-+                assertNull(fixture.lookup.get(cart.getId()));
-+                assertNull(fixture.lookup.get(cart.getUUID()));
++                assertNull(fixture.lookup.getEntityGetter().get(cart.getId()));
++                assertNull(fixture.lookup.getEntityGetter().get(cart.getUUID()));
 +            }
 +        }
 +        assertEquals(100, fixture.tracked.size());
-+        assertEquals(100, fixture.lookup.getEntityCount());
++        assertEquals(100, fixture.lookup.count());
 +        assertTrue(fixture.tracked.stream().noneMatch(Entity::isRemoved));
++    }
++
++    @Test
++    void rejectedDuplicateUuidDoesNotChangeTheCount() throws ReflectiveOperationException {
++        final Fixture fixture = new Fixture();
++        final Minecart original = fixture.fill(0, 0, 1).getFirst();
++        final Minecart duplicate = fixture.cart(8, 8, 8);
++        duplicate.setUUID(original.getUUID());
++        assertFalse(fixture.lookup.addNewEntity(duplicate));
++        assertEquals(1, fixture.count(0, 0));
++        assertSame(original, fixture.lookup.getEntityGetter().get(original.getUUID()));
++        assertFalse(duplicate.isRemoved());
++    }
++
++    @Test
++    void trackingCallbackCannotAdmitAnExtraCart() throws ReflectiveOperationException {
++        final Fixture fixture = new Fixture();
++        fixture.fill(0, 0, 99);
++        final Minecart extra = fixture.cart(8, 8, 8);
++        doAnswer(invocation -> {
++            assertEquals(100, fixture.count(0, 0));
++            assertFalse(fixture.lookup.addNewEntity(extra));
++            return null;
++        }).when(fixture.callback).onTrackingStart(any());
++        assertTrue(fixture.lookup.addNewEntity(fixture.cart(8, 8, 8)));
++        assertEquals(100, fixture.count(0, 0));
++        assertFalse(extra.isRemoved());
 +    }
 +
 +    @ParameterizedTest
@@ -85,9 +131,12 @@ index 0000000000000000000000000000000000000000..0f9f5f3c543468ee3366e0825934c7ea
 +            saved.add(fixture.cart(0, 8, 0));
 +        }
 +        if (legacy) {
-+            fixture.lookup.addLegacyChunkEntities(saved, new ChunkPos(0, 0));
++            fixture.lookup.addLegacyChunkEntities(saved.stream());
 +        } else {
-+            fixture.lookup.addEntityChunkEntities(saved, new ChunkPos(0, 0));
++            fixture.loads.get(ChunkPos.pack(0, 0)).complete(new ChunkEntities<>(new ChunkPos(0, 0), saved));
++            try (var events = mockStatic(CraftEventFactory.class)) {
++                fixture.lookup.processPendingLoads();
++            }
 +        }
 +        assertEquals(3100, fixture.count(0, 0));
 +        assertEquals(3100, fixture.tracked.size());
@@ -114,7 +163,7 @@ index 0000000000000000000000000000000000000000..0f9f5f3c543468ee3366e0825934c7ea
 +        assertEquals(100, fixture.count(0, 0));
 +        assertFalse(fixture.lookup.addNewEntity(new MinecartChest(EntityTypes.CHEST_MINECART, fixture.level)));
 +        assertTrue(fixture.lookup.addNewEntity(new Boat(EntityTypes.OAK_BOAT, fixture.level, () -> Items.OAK_BOAT)));
-+        assertEquals(101, fixture.lookup.getEntityCount());
++        assertEquals(101, fixture.lookup.count());
 +    }
 +
 +    @Test
@@ -158,15 +207,17 @@ index 0000000000000000000000000000000000000000..0f9f5f3c543468ee3366e0825934c7ea
 +        assertEquals(99, fixture.count(0, 0));
 +        final Minecart replacement = fixture.cart(0, 8, 0);
 +        assertTrue(fixture.lookup.addNewEntity(replacement));
-+        assertSame(replacement, fixture.lookup.get(replacement.getId()));
++        assertSame(replacement, fixture.lookup.getEntityGetter().get(replacement.getId()));
 +        assertEquals(100, fixture.count(0, 0));
 +    }
 +
 +    @Test
-+    void preservesCountWhenReplacingTransientSlices() throws ReflectiveOperationException {
++    void preservesCountAcrossVisibilityChanges() throws ReflectiveOperationException {
 +        final Fixture fixture = new Fixture();
 +        fixture.fill(0, 0, 100);
-+        fixture.lookup.entitySectionLoad(0, 0, new ChunkEntitySlices(fixture.level, 0, 0, FullChunkStatus.ENTITY_TICKING, null, -4, 19));
++        fixture.lookup.updateChunkStatus(new ChunkPos(0, 0), Visibility.HIDDEN);
++        assertEquals(100, fixture.count(0, 0));
++        fixture.lookup.updateChunkStatus(new ChunkPos(0, 0), Visibility.TICKING);
 +        assertEquals(100, fixture.count(0, 0));
 +        assertFalse(fixture.lookup.addNewEntity(fixture.cart(0, 8, 0)));
 +    }
@@ -180,9 +231,9 @@ index 0000000000000000000000000000000000000000..0f9f5f3c543468ee3366e0825934c7ea
 +        assertFalse(fixture.lookup.addNewEntity(cart));
 +        assertFalse(cart.isRemoved());
 +        assertEquals(64, cart.getItem(0).getCount());
-+        assertNull(fixture.lookup.get(cart.getUUID()));
++        assertNull(fixture.lookup.getEntityGetter().get(cart.getUUID()));
 +        verify(fixture.level, never()).addFreshEntity(any(Entity.class));
-+        assertEquals(100, fixture.lookup.getEntityCount());
++        assertEquals(100, fixture.lookup.count());
 +    }
 +
 +    @Test
@@ -204,20 +255,22 @@ index 0000000000000000000000000000000000000000..0f9f5f3c543468ee3366e0825934c7ea
 +            resident.setRemoved(Entity.RemovalReason.UNLOADED_TO_CHUNK, null);
 +        }
 +        assertEquals(0, fixture.count(0, 0));
-+        assertEquals(0, fixture.lookup.getEntityCount());
++        assertEquals(0, fixture.lookup.count());
 +        final List<Entity> generated = new ArrayList<>();
 +        for (int i = 0; i < 101; ++i) {
 +            generated.add(fixture.cart(8, 8, 0));
 +        }
-+        fixture.lookup.addWorldGenChunkEntities(generated, new ChunkPos(0, 0));
++        fixture.lookup.addWorldGenChunkEntities(generated.stream());
 +        assertEquals(100, fixture.count(0, 0));
-+        assertNull(fixture.lookup.get(generated.getLast().getId()));
++        assertNull(fixture.lookup.getEntityGetter().get(generated.getLast().getId()));
 +        assertTrue(generated.stream().noneMatch(Entity::isRemoved));
 +    }
 +
 +    private static final class Fixture {
 +        final ServerLevel level = mock(ServerLevel.class);
-+        final TestLookup lookup;
++        final PersistentEntitySectionManager<Entity> lookup;
++        final LevelCallback<Entity> callback;
++        final Map<Long, CompletableFuture<ChunkEntities<Entity>>> loads = new HashMap<>();
 +        final List<Entity> tracked = new ArrayList<>();
 +
 +        @SuppressWarnings("unchecked")
@@ -237,9 +290,17 @@ index 0000000000000000000000000000000000000000..0f9f5f3c543468ee3366e0825934c7ea
 +            when(this.level.getMaxSectionY()).thenReturn(19);
 +            final AtomicInteger ids = new AtomicInteger();
 +            when(this.level.getNextEntityId()).thenAnswer(invocation -> ids.incrementAndGet());
-+            final LevelCallback<Entity> callback = mock(LevelCallback.class);
-+            this.lookup = new TestLookup(this.level, callback);
-+            when(this.level.moonrise$getEntityLookup()).thenReturn(this.lookup);
++            this.callback = mock(LevelCallback.class);
++            final EntityStorage storage = mock(EntityStorage.class);
++            when(storage.loadEntities(any())).thenAnswer(invocation -> {
++                final ChunkPos pos = invocation.getArgument(0);
++                return this.loads.computeIfAbsent(pos.pack(), key -> new CompletableFuture<>());
++            });
++            this.lookup = new PersistentEntitySectionManager<>(Entity.class, callback, storage);
++            when(this.level.getEntities()).thenReturn(this.lookup.getEntityGetter());
++            for (int x = -1; x <= 1; ++x) {
++                this.lookup.updateChunkStatus(new ChunkPos(x, 0), Visibility.TICKING);
++            }
 +            doAnswer(invocation -> {
 +                final Entity entity = invocation.getArgument(0);
 +                this.tracked.add(entity);
@@ -264,57 +325,34 @@ index 0000000000000000000000000000000000000000..0f9f5f3c543468ee3366e0825934c7ea
 +        }
 +
 +        int count(final int x, final int z) {
-+            final ChunkEntitySlices chunk = this.lookup.getChunk(x, z);
-+            return chunk == null ? 0 : chunk.getMinecartCount();
++            return this.lookup.getMinecartCount(ChunkPos.pack(x, z));
 +        }
-+    }
-+
-+    private static final class TestLookup extends EntityLookup {
-+        TestLookup(final Level world, final LevelCallback<Entity> callback) { super(world, callback); }
-+        @Override protected Boolean blockTicketUpdates() { return null; }
-+        @Override protected void setBlockTicketUpdates(final Boolean value) { }
-+        @Override protected void checkThread(final int x, final int z, final String reason) { }
-+        @Override protected void checkThread(final Entity entity, final String reason) { }
-+        @Override protected ChunkEntitySlices createEntityChunk(final int x, final int z, final boolean transientChunk) {
-+            final ChunkEntitySlices chunk = new ChunkEntitySlices(this.world, x, z, FullChunkStatus.ENTITY_TICKING, null, -4, 19);
-+            this.addChunk(x, z, chunk);
-+            return chunk;
-+        }
-+        @Override protected void onEmptySlices(final int x, final int z) { this.removeChunk(x, z); }
-+        @Override protected void entitySectionChangeCallback(final Entity entity, final int oldX, final int oldY, final int oldZ, final int x, final int y, final int z) { }
-+        @Override protected void addEntityCallback(final Entity entity) { }
-+        @Override protected void removeEntityCallback(final Entity entity) { }
-+        @Override protected void entityStartLoaded(final Entity entity) { }
-+        @Override protected void entityEndLoaded(final Entity entity) { }
-+        @Override protected void entityStartTicking(final Entity entity) { }
-+        @Override protected void entityEndTicking(final Entity entity) { }
-+        @Override protected boolean screenEntity(final Entity entity, final boolean fromDisk, final boolean event) { return true; }
 +    }
 +}
 diff --git a/src/test/java/io/papermc/paper/scissors/VehicleCollisionLimitTest.java b/src/test/java/io/papermc/paper/scissors/VehicleCollisionLimitTest.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..60182210ea83d690d0fc3a2f74bb32c59aa049bb
+index 0000000000000000000000000000000000000000..9c9b647bf3c498933c2c27ea266661b9d5b88a26
 --- /dev/null
 +++ b/src/test/java/io/papermc/paper/scissors/VehicleCollisionLimitTest.java
-@@ -0,0 +1,369 @@
+@@ -0,0 +1,386 @@
 +package io.papermc.paper.scissors;
 +
-+import ca.spottedleaf.moonrise.patches.chunk_system.level.entity.ChunkEntitySlices;
-+import ca.spottedleaf.moonrise.patches.chunk_system.level.entity.EntityLookup;
-+import ca.spottedleaf.moonrise.patches.collisions.CollisionUtil;
++import net.minecraft.core.SectionPos;
++import net.minecraft.world.level.entity.EntitySection;
++import net.minecraft.world.level.entity.EntitySectionStorage;
++import net.minecraft.world.level.entity.EntityLookup;
++import net.minecraft.world.level.entity.LevelEntityGetterAdapter;
++import net.minecraft.world.level.entity.Visibility;
 +import io.papermc.paper.configuration.WorldConfiguration;
 +import java.lang.reflect.InvocationTargetException;
 +import java.lang.reflect.Method;
 +import java.util.ArrayList;
 +import java.util.Collections;
-+import java.util.HashMap;
 +import java.util.List;
-+import java.util.Map;
 +import java.util.concurrent.atomic.AtomicInteger;
 +import java.util.function.Function;
 +import java.util.function.Predicate;
 +import java.util.stream.Stream;
-+import net.minecraft.server.level.FullChunkStatus;
 +import net.minecraft.server.level.ServerLevel;
 +import net.minecraft.world.entity.Entity;
 +import net.minecraft.world.entity.EntityTypes;
@@ -332,7 +370,6 @@ index 0000000000000000000000000000000000000000..60182210ea83d690d0fc3a2f74bb32c5
 +import net.minecraft.world.entity.vehicle.minecart.OldMinecartBehavior;
 +import net.minecraft.world.flag.FeatureFlags;
 +import net.minecraft.world.item.Items;
-+import net.minecraft.world.level.ChunkPos;
 +import net.minecraft.world.level.Level;
 +import net.minecraft.world.phys.AABB;
 +import org.bukkit.support.environment.Normal;
@@ -346,13 +383,12 @@ index 0000000000000000000000000000000000000000..60182210ea83d690d0fc3a2f74bb32c5
 +import static org.junit.jupiter.api.Assertions.assertFalse;
 +import static org.junit.jupiter.api.Assertions.assertTrue;
 +import static org.mockito.ArgumentMatchers.any;
-+import static org.mockito.ArgumentMatchers.anyBoolean;
 +import static org.mockito.ArgumentMatchers.anyInt;
 +import static org.mockito.ArgumentMatchers.anyList;
 +import static org.mockito.Mockito.doCallRealMethod;
 +import static org.mockito.Mockito.mock;
++import static org.mockito.Mockito.spy;
 +import static org.mockito.Mockito.never;
-+import static org.mockito.Mockito.times;
 +import static org.mockito.Mockito.verify;
 +import static org.mockito.Mockito.when;
 +
@@ -403,10 +439,12 @@ index 0000000000000000000000000000000000000000..60182210ea83d690d0fc3a2f74bb32c5
 +        int collisionChecks = 0;
 +        for (CountingMinecart cart : carts) {
 +            final List<Entity> unlimited = new ArrayList<>();
-+            fixture.chunk(0, 0).getEntities(cart, cart.getBoundingBox(), unlimited, null);
++            fixture.sections.getEntities(cart.getBoundingBox(), entity -> {
++                if (entity != cart) unlimited.add(entity);
++                return net.minecraft.util.Continuation.CONTINUE;
++            });
 +            assertEquals(375, unlimited.size());
-+            final List<AABB> shapes = new ArrayList<>();
-+            assertTrue(CollisionUtil.getEntityHardCollisions(fixture.level, cart, cart.getBoundingBox(), shapes, 0, null));
++            final var shapes = fixture.level.getEntityCollisions(cart, cart.getBoundingBox());
 +            assertEquals(limit, shapes.size());
 +            collisionChecks += cart.collisionChecks;
 +            assertFalse(cart.isRemoved());
@@ -415,16 +453,15 @@ index 0000000000000000000000000000000000000000..60182210ea83d690d0fc3a2f74bb32c5
 +    }
 +
 +    @Test
-+    void sharesMovementBudgetAcrossBothSinksAndResetsNextTick() throws ReflectiveOperationException {
++    void sharesMovementBudgetAcrossRepeatedQueriesAndResetsNextTick() throws ReflectiveOperationException {
 +        final Fixture fixture = new Fixture(8);
 +        final CountingMinecart cart = fixture.pile(40).getFirst();
 +        doCallRealMethod().when(fixture.level).getEntityCollisions(any(), any());
 +        assertEquals(8, fixture.level.getEntityCollisions(cart, cart.getBoundingBox()).size());
-+        final List<AABB> shapes = new ArrayList<>();
-+        assertFalse(CollisionUtil.getEntityHardCollisions(fixture.level, cart, cart.getBoundingBox(), shapes, 0, null));
++        assertTrue(cart.getHardCollisionEntities(cart.getBoundingBox(), null).isEmpty());
 +        assertEquals(8, cart.collisionChecks);
 +        fixture.tick++;
-+        assertTrue(CollisionUtil.getEntityHardCollisions(fixture.level, cart, cart.getBoundingBox(), shapes, 0, null));
++        final var shapes = fixture.level.getEntityCollisions(cart, cart.getBoundingBox());
 +        assertEquals(16, cart.collisionChecks);
 +        assertEquals(8, shapes.size());
 +    }
@@ -447,14 +484,12 @@ index 0000000000000000000000000000000000000000..60182210ea83d690d0fc3a2f74bb32c5
 +    }
 +
 +    @Test
-+    void preservesSmallQueriesAndCheckOnlySemantics() throws ReflectiveOperationException {
++    void preservesSmallQueriesAndIndependentPushBudget() throws ReflectiveOperationException {
 +        final Fixture fixture = new Fixture(8);
 +        final CountingMinecart cart = fixture.pile(3).getFirst();
 +        assertEquals(2, cart.getHardCollisionEntities(cart.getBoundingBox(), null).size());
-+        assertTrue(CollisionUtil.getEntityHardCollisions(
-+            fixture.level, cart, cart.getBoundingBox(), null, CollisionUtil.COLLISION_FLAG_CHECK_ONLY, null
-+        ));
-+        assertEquals(1, cart.collisionChecks);
++        assertEquals(2, fixture.level.getEntityCollisions(cart, cart.getBoundingBox()).size());
++        assertEquals(2, cart.collisionChecks);
 +        assertEquals(2, cart.pushCandidates(entity -> true).size());
 +    }
 +
@@ -466,7 +501,7 @@ index 0000000000000000000000000000000000000000..60182210ea83d690d0fc3a2f74bb32c5
 +        final Predicate<Entity> fail = entity -> { throw new AssertionError("Disabled collision predicate"); };
 +        assertTrue(cart.getHardCollisionEntities(cart.getBoundingBox(), fail).isEmpty());
 +        assertTrue(cart.pushCandidates(fail).isEmpty());
-+        verify(fixture.lookup, never()).getChunk(anyInt(), anyInt());
++        verify(fixture.sections, never()).getVehicleCollisionEntities(any(), any(), anyList(), anyInt(), any());
 +    }
 +
 +    @Test
@@ -481,7 +516,7 @@ index 0000000000000000000000000000000000000000..60182210ea83d690d0fc3a2f74bb32c5
 +                boxReads.incrementAndGet();
 +                return new AABB(12, 8, 12, 13, 9, 13);
 +            });
-+            fixture.chunk(0, 0).addEntity(entity, 0);
++            fixture.section(0, 0, 0).add(entity);
 +        }
 +        assertTrue(cart.getHardCollisionEntities(cart.getBoundingBox(), null).isEmpty());
 +        // One chunk visit, one section visit, and the source cart also use scan steps.
@@ -503,8 +538,8 @@ index 0000000000000000000000000000000000000000..60182210ea83d690d0fc3a2f74bb32c5
 +        budget.reset(0, 16);
 +        final List<Entity> candidates = new ArrayList<>();
 +        int queries = 0;
-+        while (!fixture.lookup.getVehicleCollisionEntities(cart, box, candidates, 17, false, budget)) {
-+            assertTrue(++queries < 10);
++        while (!fixture.sections.getVehicleCollisionEntities(cart, box, candidates, 17, budget)) {
++            assertTrue(++queries < 256);
 +        }
 +        assertTrue(candidates.isEmpty());
 +        assertFalse(budget.tryScan());
@@ -519,7 +554,35 @@ index 0000000000000000000000000000000000000000..60182210ea83d690d0fc3a2f74bb32c5
 +        final Fixture fixture = new Fixture(16);
 +        final CountingMinecart cart = fixture.cart(8, 8, 8);
 +        assertTrue(cart.getHardCollisionEntities(new AABB(-100_000, 0, -100_000, 100_000, 10, 100_000), null).isEmpty());
-+        verify(fixture.lookup, times(256)).getChunk(anyInt(), anyInt());
++        final var field = VehicleEntity.class.getDeclaredField("hardCollisionBudget");
++        field.setAccessible(true);
++        assertFalse(((VehicleEntity.CollisionBudget) field.get(cart)).tryScan());
++    }
++
++    @Test
++    void countsSectionsOutsideTheQueryBeforeScanningEntities() throws ReflectiveOperationException {
++        final Fixture fixture = new Fixture(16);
++        final CountingMinecart cart = fixture.cart(8, 8, 8);
++        for (int z = 1; z <= 400; ++z) {
++            fixture.section(0, 0, z);
++        }
++        final VehicleEntity.CollisionBudget budget = new VehicleEntity.CollisionBudget();
++        budget.reset(0, 16);
++        final List<Entity> candidates = new ArrayList<>();
++        assertTrue(fixture.sections.getVehicleCollisionEntities(cart, cart.getBoundingBox(), candidates, 17, budget));
++        assertTrue(candidates.isEmpty());
++        assertFalse(budget.tryScan());
++    }
++
++    @Test
++    void doesNotCollideWithInaccessibleSections() throws ReflectiveOperationException {
++        final Fixture fixture = new Fixture(8);
++        final CountingMinecart cart = fixture.pile(3).getFirst();
++        fixture.section(0, 0, 0).updateChunkStatus(Visibility.HIDDEN);
++        assertTrue(fixture.level.getEntityCollisions(cart, cart.getBoundingBox()).isEmpty());
++        assertEquals(0, cart.collisionChecks);
++        fixture.section(0, 0, 0).updateChunkStatus(Visibility.TICKING);
++        assertEquals(2, fixture.level.getEntityCollisions(cart, cart.getBoundingBox()).size());
 +    }
 +
 +    @Test
@@ -541,8 +604,7 @@ index 0000000000000000000000000000000000000000..60182210ea83d690d0fc3a2f74bb32c5
 +        fixture.pile(40);
 +        final Boat boat = new Boat(EntityTypes.OAK_BOAT, fixture.level, () -> Items.OAK_BOAT);
 +        boat.setPos(8, 8, 8);
-+        final List<AABB> shapes = new ArrayList<>();
-+        assertTrue(CollisionUtil.getEntityHardCollisions(fixture.level, boat, boat.getBoundingBox(), shapes, 0, null));
++        final var shapes = fixture.level.getEntityCollisions(boat, boat.getBoundingBox());
 +        assertEquals(8, shapes.size());
 +        assertTrue(boat.getHardCollisionEntities(boat.getBoundingBox(), null).isEmpty());
 +    }
@@ -554,8 +616,7 @@ index 0000000000000000000000000000000000000000..60182210ea83d690d0fc3a2f74bb32c5
 +        fixture.pile(40);
 +        final VehicleEntity vehicle = factory.apply(fixture.level);
 +        vehicle.setPos(8, 8, 8);
-+        final List<AABB> shapes = new ArrayList<>();
-+        assertTrue(CollisionUtil.getEntityHardCollisions(fixture.level, vehicle, vehicle.getBoundingBox(), shapes, 0, null));
++        final var shapes = fixture.level.getEntityCollisions(vehicle, vehicle.getBoundingBox());
 +        assertEquals(8, shapes.size());
 +        assertTrue(vehicle.getHardCollisionEntities(vehicle.getBoundingBox(), null).isEmpty());
 +        assertFalse(vehicle.isRemoved());
@@ -575,8 +636,7 @@ index 0000000000000000000000000000000000000000..60182210ea83d690d0fc3a2f74bb32c5
 +
 +    private static final class Fixture {
 +        final ServerLevel level = mock(ServerLevel.class);
-+        final EntityLookup lookup = mock(EntityLookup.class);
-+        final Map<Long, ChunkEntitySlices> chunks = new HashMap<>();
++        final EntitySectionStorage<Entity> sections = spy(new EntitySectionStorage<>(Entity.class, key -> Visibility.TICKING));
 +        long tick;
 +
 +        Fixture(final int configuredLimit) throws ReflectiveOperationException {
@@ -596,23 +656,18 @@ index 0000000000000000000000000000000000000000..60182210ea83d690d0fc3a2f74bb32c5
 +            when(this.level.getGameTime()).thenAnswer(invocation -> this.tick);
 +            final AtomicInteger ids = new AtomicInteger();
 +            when(this.level.getNextEntityId()).thenAnswer(invocation -> ids.incrementAndGet());
-+            when(this.level.moonrise$getEntityLookup()).thenReturn(this.lookup);
-+            when(this.lookup.getChunk(anyInt(), anyInt())).thenAnswer(invocation ->
-+                this.chunks.get(ChunkPos.pack(invocation.getArgument(0), invocation.getArgument(1)))
-+            );
-+            doCallRealMethod().when(this.lookup).getVehicleCollisionEntities(any(), any(), anyList(), anyInt(), anyBoolean(), any());
++            when(this.level.getEntities()).thenReturn(new LevelEntityGetterAdapter<>(new EntityLookup<>(), this.sections));
++            doCallRealMethod().when(this.level).getEntityCollisions(any(), any());
 +        }
 +
-+        ChunkEntitySlices chunk(final int x, final int z) {
-+            return this.chunks.computeIfAbsent(ChunkPos.pack(x, z), key ->
-+                new ChunkEntitySlices(this.level, x, z, FullChunkStatus.ENTITY_TICKING, null, -4, 19)
-+            );
++        EntitySection<Entity> section(final int x, final int y, final int z) {
++            return this.sections.getOrCreateSection(SectionPos.asLong(x, y, z));
 +        }
 +
 +        CountingMinecart cart(final int x, final int y, final int z) {
 +            final CountingMinecart cart = new CountingMinecart(this.level);
 +            cart.setPos(x, y, z);
-+            this.chunk(x >> 4, z >> 4).addEntity(cart, y >> 4);
++            this.section(x >> 4, y >> 4, z >> 4).add(cart);
 +            return cart;
 +        }
 +

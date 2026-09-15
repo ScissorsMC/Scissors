@@ -6,18 +6,18 @@ Subject: [PATCH] Discard excessively nested command suggestions
 Reject recursive command input before it enters the async suggestion queue, and make the authoritative SNBT depth guard report invalid syntax instead of leaking a runtime exception. This prevents completion floods from spamming errors or exhausting the parser stack.
 
 diff --git a/net/minecraft/server/network/ServerGamePacketListenerImpl.java b/net/minecraft/server/network/ServerGamePacketListenerImpl.java
-index 39b956ea92bdd8d06a264fb828a22fabfe251740..7afc4d02dc051dc40c6225c1bb958c89ecbcc027 100644
+index 0945ae296c48b8b4a55e1cca978a50f26e9e0896..d2e184df998bd27a39567c4536bedfa261eae57c 100644
 --- a/net/minecraft/server/network/ServerGamePacketListenerImpl.java
 +++ b/net/minecraft/server/network/ServerGamePacketListenerImpl.java
-@@ -269,6 +269,7 @@ public class ServerGamePacketListenerImpl
+@@ -272,6 +272,7 @@ public class ServerGamePacketListenerImpl
+     private static final Component CHAT_VALIDATION_FAILED = Component.translatable("multiplayer.disconnect.chat_validation_failed");
      private static final Component INVALID_COMMAND_SIGNATURE = Component.translatable("chat.disabled.invalid_command_signature").withStyle(ChatFormatting.RED);
-     private static final int MAX_COMMAND_SUGGESTIONS = 1000;
      private static final long UNSAFE_CREATIVE_ITEM_LOG_INTERVAL = TimeUnit.SECONDS.toMillis(1L); // Scissors - rate-limit exploit logging
 +    private static final long NESTED_COMMAND_SUGGESTION_LOG_INTERVAL = TimeUnit.SECONDS.toMillis(1L); // Scissors - rate-limit exploit logging
      public ServerPlayer player;
      public final PlayerChunkSender chunkSender;
      private int tickCount;
-@@ -279,6 +280,7 @@ public class ServerGamePacketListenerImpl
+@@ -282,6 +283,7 @@ public class ServerGamePacketListenerImpl
      private final TickThrottler tabSpamThrottler = new TickThrottler(io.papermc.paper.configuration.GlobalConfiguration.get().spamLimiter.tabSpamIncrement, io.papermc.paper.configuration.GlobalConfiguration.get().spamLimiter.tabSpamLimit); // Paper - configurable tab spam limits
      private final TickThrottler recipeSpamPackets = new TickThrottler(io.papermc.paper.configuration.GlobalConfiguration.get().spamLimiter.recipeSpamIncrement, io.papermc.paper.configuration.GlobalConfiguration.get().spamLimiter.recipeSpamLimit);
      private long lastUnsafeCreativeItemWarning; // Scissors - rate-limit exploit logging
@@ -25,12 +25,12 @@ index 39b956ea92bdd8d06a264fb828a22fabfe251740..7afc4d02dc051dc40c6225c1bb958c89
      private double firstGoodX;
      private double firstGoodY;
      private double firstGoodZ;
-@@ -845,6 +847,20 @@ public class ServerGamePacketListenerImpl
+@@ -828,6 +830,20 @@ public class ServerGamePacketListenerImpl
+ 
      @Override
      public void handleCustomCommandSuggestions(final ServerboundCommandSuggestionPacket packet) {
-         // PacketUtils.ensureRunningOnSameThread(packet, this, this.player.level()); // Paper - AsyncTabCompleteEvent; run this async
 +        // Scissors start - discard recursive parser crash payloads before they reach the async queue
-+        if (io.github.scissorsmc.util.CommandNesting.exceedsMaxDepth(packet.getCommand())) {
++        if (io.github.scissorsmc.util.CommandNesting.exceedsMaxDepth(packet.command())) {
 +            final long now = Util.getMillis();
 +            if (now - this.lastNestedCommandSuggestionWarning >= NESTED_COMMAND_SUGGESTION_LOG_INTERVAL) {
 +                this.lastNestedCommandSuggestionWarning = now;
@@ -43,29 +43,20 @@ index 39b956ea92bdd8d06a264fb828a22fabfe251740..7afc4d02dc051dc40c6225c1bb958c89
 +            return;
 +        }
 +        // Scissors end - discard recursive parser crash payloads before they reach the async queue
-         // CraftBukkit start
-         if (!this.tabSpamThrottler.isIncrementAndUnderThreshold() && !this.server.getPlayerList().isOp(this.player.nameAndId()) && !this.server.isSingleplayerOwner(this.player.nameAndId())) { // Paper - configurable tab spam limits
-             this.disconnectAsync(Component.translatable("disconnect.spam"), org.bukkit.event.player.PlayerKickEvent.Cause.SPAM); // Paper - Kick event cause // Paper - add proper async disconnect
+         // Paper start - throttle tab completions
+         if (!this.tabSpamThrottler.isIncrementAndUnderThreshold() && !this.server.getPlayerList().isOp(this.player.nameAndId()) && !this.server.isSingleplayerOwner(this.player.nameAndId())) {
+             this.disconnectAsync(Component.translatable("disconnect.spam"), org.bukkit.event.player.PlayerKickEvent.Cause.SPAM);
 diff --git a/net/minecraft/util/parsing/packrat/Scope.java b/net/minecraft/util/parsing/packrat/Scope.java
-index 4880f16347c99dc5c1a06fbbf0af197c95f3c9e7..25158d7bbb5520ea2ce3143dafc9994542f4c52c 100644
+index 7fe7f5974026a6b883437425fa2af0ee06c2e85c..3a12c9d6b878246cb5124eb00f6b117e75e9b6ba 100644
 --- a/net/minecraft/util/parsing/packrat/Scope.java
 +++ b/net/minecraft/util/parsing/packrat/Scope.java
-@@ -267,11 +267,16 @@ public final class Scope {
-     }
- 
-     // Paper start - track depth
-+    // Scissors - report excessive nesting as invalid syntax so suggestion parsers can discard it
-+    private static final DelayedException<com.mojang.brigadier.exceptions.CommandSyntaxException> TOO_DEEP = DelayedException.create(
-+        new com.mojang.brigadier.exceptions.SimpleCommandExceptionType(net.minecraft.network.chat.Component.literal("Input is too deeply nested"))
-+    );
+@@ -270,7 +270,8 @@ public final class Scope {
      private int depth;
  
      private static final Term<?> INCREASING_DEPTH_TERM = (parseState, scope, control) -> {
 -        if (++scope.depth > 512) {
--            parseState.errorCollector().store(parseState.mark(), new IllegalStateException("Too deep"));
 +        // Scissors - stop before recursive SNBT parsing can exhaust the stack
 +        if (++scope.depth > io.github.scissorsmc.util.CommandNesting.MAX_DEPTH) {
-+            parseState.errorCollector().store(parseState.mark(), TOO_DEEP);
+             parseState.errorCollector().store(parseState.mark(), new io.papermc.paper.brigadier.TagParseCommandSyntaxException("Too deep"));
              return false;
          }
-         return true;

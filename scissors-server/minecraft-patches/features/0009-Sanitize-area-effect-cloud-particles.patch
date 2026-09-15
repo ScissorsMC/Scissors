@@ -6,7 +6,7 @@ Subject: [PATCH] Sanitize area effect cloud particles
 Area-effect clouds make clients construct particles proportional to squared radius before queue limits apply. Restrict clouds to vanilla particle implementations and bound radius, active duration, wait time, and loaded age so custom particles or long-lived clouds cannot create unbounded client work.
 
 diff --git a/net/minecraft/world/entity/AreaEffectCloud.java b/net/minecraft/world/entity/AreaEffectCloud.java
-index f03fa06c0ba56f7f5e1e45bc1568a490751efde3..792fa8e09ecfd244d289e1e12c5edc41895e0f0a 100644
+index f74837dc0be560a1601132594587bcfc22dcf778..1aa93eac2c19f6599613cdb4db1f5884d1890026 100644
 --- a/net/minecraft/world/entity/AreaEffectCloud.java
 +++ b/net/minecraft/world/entity/AreaEffectCloud.java
 @@ -1,15 +1,20 @@
@@ -148,7 +148,7 @@ index f03fa06c0ba56f7f5e1e45bc1568a490751efde3..792fa8e09ecfd244d289e1e12c5edc41
      public void setPotionDurationScale(final float scale) {
          this.potionDurationScale = scale;
      }
-@@ -137,14 +209,18 @@ public class AreaEffectCloud extends Entity implements TraceableEntity {
+@@ -137,7 +209,11 @@ public class AreaEffectCloud extends Entity implements TraceableEntity {
      }
  
      public void setDuration(final int duration) {
@@ -160,16 +160,8 @@ index f03fa06c0ba56f7f5e1e45bc1568a490751efde3..792fa8e09ecfd244d289e1e12c5edc41
 +        this.duration = sanitizedDuration;
      }
  
-     // Paper start - EAR 2
      @Override
-     public void inactiveTick() {
-         super.inactiveTick();
--        if (this.duration != INFINITE_DURATION && this.tickCount - this.waitTime >= this.duration) {
-+        if ((long)this.tickCount - this.waitTime >= this.duration) {
-             this.discard(org.bukkit.event.entity.EntityRemoveEvent.Cause.DESPAWN); // CraftBukkit - add Bukkit remove cause
-         }
-     }
-@@ -198,7 +274,7 @@ public class AreaEffectCloud extends Entity implements TraceableEntity {
+@@ -188,7 +264,7 @@ public class AreaEffectCloud extends Entity implements TraceableEntity {
      }
  
      private void serverTick(final ServerLevel serverLevel) {
@@ -178,7 +170,7 @@ index f03fa06c0ba56f7f5e1e45bc1568a490751efde3..792fa8e09ecfd244d289e1e12c5edc41
              this.discard(org.bukkit.event.entity.EntityRemoveEvent.Cause.DESPAWN); // CraftBukkit - add Bukkit remove cause
          } else {
              boolean isWaiting = this.isWaiting();
-@@ -268,12 +344,13 @@ public class AreaEffectCloud extends Entity implements TraceableEntity {
+@@ -258,12 +334,13 @@ public class AreaEffectCloud extends Entity implements TraceableEntity {
                                              this.setRadius(radius);
                                          }
  
@@ -195,7 +187,7 @@ index f03fa06c0ba56f7f5e1e45bc1568a490751efde3..792fa8e09ecfd244d289e1e12c5edc41
                                          }
                                      }
                                  }
-@@ -314,7 +391,11 @@ public class AreaEffectCloud extends Entity implements TraceableEntity {
+@@ -304,7 +381,11 @@ public class AreaEffectCloud extends Entity implements TraceableEntity {
      }
  
      public void setWaitTime(final int waitTime) {
@@ -208,7 +200,7 @@ index f03fa06c0ba56f7f5e1e45bc1568a490751efde3..792fa8e09ecfd244d289e1e12c5edc41
      }
  
      public void setOwner(final @Nullable LivingEntity owner) {
-@@ -328,9 +409,9 @@ public class AreaEffectCloud extends Entity implements TraceableEntity {
+@@ -318,9 +399,9 @@ public class AreaEffectCloud extends Entity implements TraceableEntity {
  
      @Override
      protected void readAdditionalSaveData(final ValueInput input) {
@@ -221,7 +213,7 @@ index f03fa06c0ba56f7f5e1e45bc1568a490751efde3..792fa8e09ecfd244d289e1e12c5edc41
          this.reapplicationDelay = input.getIntOr("ReapplicationDelay", 20);
          this.durationOnUse = input.getIntOr("DurationOnUse", 0);
          this.radiusOnUse = input.getFloatOr("RadiusOnUse", 0.0F);
-@@ -365,6 +446,23 @@ public class AreaEffectCloud extends Entity implements TraceableEntity {
+@@ -355,6 +436,23 @@ public class AreaEffectCloud extends Entity implements TraceableEntity {
  
      @Override
      public void onSyncedDataUpdated(final EntityDataAccessor<?> accessor) {

@@ -6,10 +6,10 @@ Subject: [PATCH] Bound item dump SNBT output
 Use the explicitly bounded pretty printer for operator-facing item diagnostics so hostile components cannot create unbounded command output.
 
 diff --git a/src/main/java/io/papermc/paper/command/subcommands/DumpItemCommand.java b/src/main/java/io/papermc/paper/command/subcommands/DumpItemCommand.java
-index dc84b7c3746f1259d5df729aff4c5f3616c156e1..d6e057057ea32cbdbb8e01a9b583eeda412e13a5 100644
+index 39b20d4b1e120aa54061e23ac57df0ee1fa63f5a..a81cb76244dc3f6f3ae9780b694ce6c1d8d37cef 100644
 --- a/src/main/java/io/papermc/paper/command/subcommands/DumpItemCommand.java
 +++ b/src/main/java/io/papermc/paper/command/subcommands/DumpItemCommand.java
-@@ -123,7 +123,7 @@ public final class DumpItemCommand implements PaperSubcommand {
+@@ -124,7 +124,7 @@ public final class DumpItemCommand implements PaperSubcommand {
              text("=", WHITE),
              PaperAdventure.asAdventure(NbtUtils.toPrettyComponent(serialized))
          ));

@@ -1,14 +1,14 @@
 --- a/net/minecraft/server/network/ServerGamePacketListenerImpl.java
 +++ b/net/minecraft/server/network/ServerGamePacketListenerImpl.java
-@@ -268,6 +_,7 @@
+@@ -271,6 +_,7 @@
+     private static final int INVALID_POSITION_CORRECTION_MAX_INTERVAL_TICKS = 20;
      private static final Component CHAT_VALIDATION_FAILED = Component.translatable("multiplayer.disconnect.chat_validation_failed");
      private static final Component INVALID_COMMAND_SIGNATURE = Component.translatable("chat.disabled.invalid_command_signature").withStyle(ChatFormatting.RED);
-     private static final int MAX_COMMAND_SUGGESTIONS = 1000;
 +    private static final long UNSAFE_CREATIVE_ITEM_LOG_INTERVAL = TimeUnit.SECONDS.toMillis(1L); // Scissors - rate-limit exploit logging
      public ServerPlayer player;
      public final PlayerChunkSender chunkSender;
      private int tickCount;
-@@ -277,6 +_,7 @@
+@@ -280,6 +_,7 @@
      private final TickThrottler commandSpamThrottler;
      private final TickThrottler tabSpamThrottler = new TickThrottler(io.papermc.paper.configuration.GlobalConfiguration.get().spamLimiter.tabSpamIncrement, io.papermc.paper.configuration.GlobalConfiguration.get().spamLimiter.tabSpamLimit); // Paper - configurable tab spam limits
      private final TickThrottler recipeSpamPackets = new TickThrottler(io.papermc.paper.configuration.GlobalConfiguration.get().spamLimiter.recipeSpamIncrement, io.papermc.paper.configuration.GlobalConfiguration.get().spamLimiter.recipeSpamLimit);
@@ -16,7 +16,7 @@
      private double firstGoodX;
      private double firstGoodY;
      private double firstGoodZ;
-@@ -3485,11 +_,28 @@
+@@ -3459,11 +_,28 @@
              }
  
              boolean validSlot = packet.slotNum() >= 1 && packet.slotNum() <= 45;
@@ -47,7 +47,7 @@
  
                  SlotType type = SlotType.QUICKBAR;
                  if (drop) {
-@@ -3505,6 +_,21 @@
+@@ -3479,6 +_,21 @@
                  this.cserver.getPluginManager().callEvent(event);
  
                  itemStack = CraftItemStack.asNMSCopy(event.getCursor());
@@ -69,7 +69,7 @@
  
                  switch (event.getResult()) {
                      case ALLOW:
-@@ -3536,6 +_,19 @@
+@@ -3510,6 +_,19 @@
                      LOGGER.warn("Player {} was dropping items too fast in creative mode, ignoring.", this.player.getPlainTextName());
                  }
              }

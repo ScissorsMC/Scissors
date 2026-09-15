@@ -730,10 +730,10 @@ index 6273c3b9563d4ac6d1e856f06058ec599ebcc60d..1986114c5f0d1855e39fd933fd974c67
          if (SIMPLE_VALUE.matcher(input).matches()) {
              return Component.literal(input).withStyle(this.styling.keyStyle());
 diff --git a/net/minecraft/network/FriendlyByteBuf.java b/net/minecraft/network/FriendlyByteBuf.java
-index 12cd230ebe97dab655f8546948f06b93f0babf1f..e459037587d6bfe756fc495d2e016d06355927f1 100644
+index b63d24683f7b3b1f11e927cf4261ff2d05cdbd38..4ede6baa51287adeaccb27ceef263237c805cd6c 100644
 --- a/net/minecraft/network/FriendlyByteBuf.java
 +++ b/net/minecraft/network/FriendlyByteBuf.java
-@@ -95,7 +95,7 @@ public class FriendlyByteBuf extends ByteBuf {
+@@ -78,7 +78,7 @@ public class FriendlyByteBuf extends ByteBuf {
      @Deprecated
      public <T> T readWithCodec(final DynamicOps<Tag> ops, final Codec<T> codec, final NbtAccounter accounter) {
          Tag tag = this.readNbt(accounter);
@@ -756,10 +756,10 @@ index e6e17f6568cd219c24d84a04cfd61aaa0dc8af79..f6645fad72b5cb9863d2af15fd3c5950
  
              @Override
 diff --git a/net/minecraft/network/chat/contents/NbtContents.java b/net/minecraft/network/chat/contents/NbtContents.java
-index 69c414b6d24300a96ee43fcb8e1fdebfd374e780..178fd9e651a26f2f189bd07d28c4513295109ab9 100644
+index acfcb3490ccab8b33667cc28fb9e949012991cf1..da907dd667abbf0385b5debd448efc282f9e50e2 100644
 --- a/net/minecraft/network/chat/contents/NbtContents.java
 +++ b/net/minecraft/network/chat/contents/NbtContents.java
-@@ -79,7 +79,7 @@ public record NbtContents(
+@@ -82,7 +82,7 @@ public record NbtContents(
                          Component component = ComponentSerialization.CODEC.parse(registryOps, tag).getOrThrow();
                          return Stream.of(ComponentUtils.resolve(context, component, recursionDepth));
                      } catch (Exception e) {
@@ -769,10 +769,10 @@ index 69c414b6d24300a96ee43fcb8e1fdebfd374e780..178fd9e651a26f2f189bd07d28c45132
                      }
                  }).reduce((left, right) -> left.append(resolvedSeparator).append(right)).orElseGet(Component::empty);
 diff --git a/net/minecraft/network/codec/ByteBufCodecs.java b/net/minecraft/network/codec/ByteBufCodecs.java
-index 0620bbf1fd5f06c726b0f4c75a46070f577f4743..ce9fbbf055e34d9c41ee92d2898be46455f701b2 100644
+index 08ba78fcd2f02fef5f2695488eb381522beaea8e..1374ce87a1bca0d7abb006b43480e8b6b0fd16c6 100644
 --- a/net/minecraft/network/codec/ByteBufCodecs.java
 +++ b/net/minecraft/network/codec/ByteBufCodecs.java
-@@ -364,7 +364,7 @@ public interface ByteBufCodecs {
+@@ -407,7 +407,7 @@ public interface ByteBufCodecs {
              if (tag instanceof CompoundTag compoundTag) {
                  return compoundTag;
              } else {
@@ -781,7 +781,7 @@ index 0620bbf1fd5f06c726b0f4c75a46070f577f4743..ce9fbbf055e34d9c41ee92d2898be464
              }
          }, compoundTag -> (Tag)compoundTag);
      }
-@@ -412,7 +412,7 @@ public interface ByteBufCodecs {
+@@ -455,7 +455,7 @@ public interface ByteBufCodecs {
              public T decode(final RegistryFriendlyByteBuf input) {
                  Tag tag = tagCodec.decode(input);
                  RegistryOps<Tag> ops = input.registryAccess().createSerializationContext(NbtOps.INSTANCE);
@@ -791,10 +791,10 @@ index 0620bbf1fd5f06c726b0f4c75a46070f577f4743..ce9fbbf055e34d9c41ee92d2898be464
  
              @Override
 diff --git a/net/minecraft/world/entity/EntityType.java b/net/minecraft/world/entity/EntityType.java
-index a23e4b5e1ddc78d3fec6ab84bbac0a15dc485350..6b943611f1a5b8df7ddbefea6fdf579c5bbdba9f 100644
+index b94e06a2982ff6815338eca3f323a00453a88162..cb772d823322d0f7b994ddde6f723df10e265706 100644
 --- a/net/minecraft/world/entity/EntityType.java
 +++ b/net/minecraft/world/entity/EntityType.java
-@@ -399,7 +399,7 @@ public class EntityType<T extends Entity> implements EntityTypeTest<Entity, T>,
+@@ -403,7 +403,7 @@ public class EntityType<T extends Entity> implements EntityTypeTest<Entity, T>,
              () -> {
                  LOGGER.warn("Skipping Entity with id {}", input.getStringOr("id", "[invalid]"));
                  if ((DEBUG_ENTITIES_WITH_INVALID_IDS || level.getCraftServer().getServer().isDebugging()) && input instanceof TagValueInput tagInput) {
