@@ -2,7 +2,9 @@
 
 - Recorded: 2026-08-14
 - Applies to: Minecraft 26.2
-- Paper: `c9e894d3cc03f21f80de4f4061a795e11941e89a`
+- Scissors Paper: `c9e894d3cc03f21f80de4f4061a795e11941e89a`
+- Folia: `24c5c95dc45e02caff98a97ed6ffee7565523464`
+- AdvancedSlimePaper: `6bc38bef65921cf480446de8e46161803e68d750`
 - Revalidate after changing any version above
 
 ## Crash mechanism

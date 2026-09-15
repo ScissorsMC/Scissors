@@ -2,7 +2,10 @@
 
 - Recorded: 2026-08-29
 - Applies to: Minecraft 26.2
-- Paper: `37dc5450d9b7acb2e367e8f1fbe0f07bb01334d9`
+- Scissors and Folia Paper: `37dc5450d9b7acb2e367e8f1fbe0f07bb01334d9`
+- Folia: `68b2af18edf378b89dfbef1d86bd21759cb81aad`
+- AdvancedSlimePaper: `6b648237b8158dcbf4b2ba3f4ab12b8cb2ceec42`
+- ASP's embedded Paper: `de518f79b596e0b9f70a0d04fdd8a2a55587df1f`
 - Revalidate after changing any version above
 
 ## Crash mechanism
@@ -40,6 +43,6 @@ retain their configured amplifiers.
    saturates to a non-negative amount.
 2. The same test verifies vanilla amounts and splash scaling are unchanged, the supplied custom potion is copied with
    amplifier `1`, its original is untouched, Instant Damage follows the same rule, and an unrelated high-amplifier
-   effect survives.
+   effect survives. The Folia and ASP notes also record storage-decode and creative-comparison checks.
 3. Rock page `14-instant-death-potions.md` and saved-toolbar group 2 slot 7 carry the version-scoped amplifier-125
    fixture for creative-ingress and explicit-slot-correction testing.

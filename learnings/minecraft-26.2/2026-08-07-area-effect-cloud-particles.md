@@ -2,8 +2,10 @@
 
 - Recorded: 2026-08-07
 - Applies to: Minecraft 26.2
-- Paper: `a40947c0acc780cebf578c6ab0f38b6948c3f86e`
-- Revalidated after updating Paper to: `f5706462f8833a858fee5fe1bccc05b60c248922`
+- Scissors Paper: `a40947c0acc780cebf578c6ab0f38b6948c3f86e`
+- Scissors revalidated after updating Paper to: `f5706462f8833a858fee5fe1bccc05b60c248922`
+- Folia: `e48800d446d2bdeb24a8d31d671554440687e846`
+- Folia's embedded Paper: `5563e58283f7771bd5ace9baad8b68614e37ad16`
 - Revalidate after changing any version above
 
 ## Crash mechanism
@@ -47,6 +49,8 @@ visual change is evidence, not proof, that the resource-exhaustion class is clos
 - Nested bundle, container, and charged-projectile items are recursively sanitized. Storage decode, creative ingress,
   creative-event replacement, and the final outgoing item encoder all apply the sanitizer. Changes are logged with the
   applicable safety policy, and creative inventory slots are explicitly corrected.
+- Folia's region-threading changes do not alter the cloud's client particle fan-out. The creative ingress changes were
+  ported within Folia's existing packet handler rather than replacing the handler with Paper's implementation.
 
 ## Regression checks
 

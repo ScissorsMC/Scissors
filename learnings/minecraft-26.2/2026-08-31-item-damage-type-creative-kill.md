@@ -2,7 +2,9 @@
 
 - Recorded: 2026-08-31
 - Applies to: Minecraft 26.2
-- Paper: `a2a42c5b12249aaba42a347327fd930a1f94af06`
+- Scissors Paper: `a2a42c5b12249aaba42a347327fd930a1f94af06`
+- Folia's embedded Paper: `5d4f9bd0e4f6b1ef70d07feb411580cef7d1a746`
+- ASP's embedded Paper: `de518f79b596e0b9f70a0d04fdd8a2a55587df1f`
 - Revalidate after changing any version above
 
 ## Crash/exploit mechanism

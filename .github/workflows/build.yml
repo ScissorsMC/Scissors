@@ -8,10 +8,10 @@ on:
 jobs:
   build:
     # Only run on PRs if the source branch is on someone else's repo, and skip
-    # pushes to master on the main repo — the publish job builds those itself
+    # publishing branches on the main repo — the publish job builds those itself
     if: >-
       ${{ (github.event_name != 'pull_request' || github.repository != github.event.pull_request.head.repo.full_name)
-      && !(github.event_name == 'push' && github.ref == 'refs/heads/master' && github.repository == 'ScissorsMC/Scissors') }}
+      && !(github.event_name == 'push' && (github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/heads/ver/')) && github.repository == 'ScissorsMC/Scissors') }}
     runs-on: blacksmith-32vcpu-ubuntu-2404-arm
     steps:
       - name: Checkout Git Repository
@@ -31,10 +31,10 @@ jobs:
         run: ./gradlew build
 
   publish:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/master' && github.repository == 'ScissorsMC/Scissors'
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/heads/ver/')) && github.repository == 'ScissorsMC/Scissors'
     runs-on: blacksmith-32vcpu-ubuntu-2404-arm
     # Secrets live in the 'fill' environment, whose deployment branch policy only
-    # allows master — GitHub enforces that server-side, unlike the 'if' above.
+    # allows master and ver/* — GitHub enforces that server-side, unlike the 'if' above.
     environment: fill
     steps:
       - name: Checkout Git Repository
@@ -42,6 +42,18 @@ jobs:
         with:
           # Full history so publishToFill can gather the commits since the last published build
           fetch-depth: 0
+      - name: Validate Publishing Version
+        shell: bash
+        run: |
+          version="$(sed -n 's/^mcVersion=//p' gradle.properties | tr -d '\r')"
+          if [[ -z "$version" ]]; then
+            echo "::error::Set mcVersion in gradle.properties before publishing."
+            exit 1
+          fi
+          if [[ "$GITHUB_REF_NAME" == ver/* && "$GITHUB_REF_NAME" != "ver/$version" ]]; then
+            echo "::error::Use ver/$version for this Minecraft version, not $GITHUB_REF_NAME."
+            exit 1
+          fi
       - name: Set up JDK
         uses: actions/setup-java@v5
         with:
