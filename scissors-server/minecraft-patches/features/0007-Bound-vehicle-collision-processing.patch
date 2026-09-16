@@ -18,21 +18,217 @@ Maintain a counter through existing chunk add/remove operations, with no
 age tracking or per-tick scans. Do not remove carts or cargo. Leave saved
 piles, movement and dimension transfers alone. Keep warnings infrequent.
 
+diff --git a/ca/spottedleaf/moonrise/patches/chunk_system/level/entity/ChunkEntitySlices.java b/ca/spottedleaf/moonrise/patches/chunk_system/level/entity/ChunkEntitySlices.java
+index 01873fc32799c3429771ef6da77d370b83b630e8..ca3040b2add2d2378935439c225c308ed918ba6f 100644
+--- a/ca/spottedleaf/moonrise/patches/chunk_system/level/entity/ChunkEntitySlices.java
++++ b/ca/spottedleaf/moonrise/patches/chunk_system/level/entity/ChunkEntitySlices.java
+@@ -19,6 +19,7 @@ import net.minecraft.util.ProblemReporter;
+ import net.minecraft.world.entity.Entity;
+ import net.minecraft.world.entity.EntitySpawnReason;
+ import net.minecraft.world.entity.EntityType;
++import net.minecraft.world.entity.vehicle.minecart.AbstractMinecart;
+ import net.minecraft.world.entity.boss.enderdragon.EnderDragonPart;
+ import net.minecraft.world.entity.boss.enderdragon.EnderDragon;
+ import net.minecraft.world.level.ChunkPos;
+@@ -52,6 +53,11 @@ public final class ChunkEntitySlices {
+     private final Reference2ObjectOpenHashMap<Class<? extends Entity>, EntityCollectionBySection> entitiesByClass;
+     private final Reference2ObjectOpenHashMap<EntityType<?>, EntityCollectionBySection> entitiesByType;
+     private final EntityList entities = new EntityList();
++    private int minecartCount; // Scissors - count carts during existing add/remove operations, not during ticks
++
++    public int getMinecartCount() {
++        return this.minecartCount;
++    }
+ 
+     public FullChunkStatus status;
+     public final ChunkData chunkData;
+@@ -249,6 +255,10 @@ public final class ChunkEntitySlices {
+         if (!this.entities.add(entity)) {
+             return false;
+         }
++        // Scissors - include every minecart subtype and every vertical section in the same limit.
++        if (entity instanceof AbstractMinecart) {
++            ++this.minecartCount;
++        }
+         ((ChunkSystemEntity)entity).moonrise$setChunkStatus(this.status);
+         ((ChunkSystemEntity)entity).moonrise$setChunkData(this.chunkData);
+         final int sectionIndex = chunkSection - this.minSection;
+@@ -283,6 +293,10 @@ public final class ChunkEntitySlices {
+         if (!this.entities.remove(entity)) {
+             return false;
+         }
++        // Scissors - also release entries on unload and on section or dimension changes.
++        if (entity instanceof AbstractMinecart) {
++            --this.minecartCount;
++        }
+         ((ChunkSystemEntity)entity).moonrise$setChunkStatus(null);
+         ((ChunkSystemEntity)entity).moonrise$setChunkData(null);
+         final int sectionIndex = chunkSection - this.minSection;
+@@ -316,6 +330,14 @@ public final class ChunkEntitySlices {
+         this.allEntities.getEntities(except, box, into, predicate);
+     }
+ 
++    // Scissors - share one scan budget across all chunks and sections in a vehicle query.
++    public boolean getVehicleCollisionEntities(
++        final Entity except, final AABB box, final List<Entity> into, final int maxCount, final boolean hardOnly,
++        final net.minecraft.world.entity.vehicle.VehicleEntity.CollisionBudget budget
++    ) {
++        return (hardOnly ? this.hardCollidingEntities : this.allEntities).getVehicleCollisionEntities(except, box, into, maxCount, budget);
++    }
++
+ 
+     public boolean getEntities(final Entity except, final AABB box, final List<Entity> into, final Predicate<? super Entity> predicate,
+                                final int maxCount) {
+@@ -545,6 +567,45 @@ public final class ChunkEntitySlices {
+             }
+         }
+ 
++        // Scissors - rejected boxes also cost work. Stop before visiting the rest of a dense section.
++        public boolean getVehicleCollisionEntities(
++            final Entity except, final AABB box, final List<Entity> into, final int maxCount,
++            final net.minecraft.world.entity.vehicle.VehicleEntity.CollisionBudget budget
++        ) {
++            if (this.count == 0) {
++                return false;
++            }
++            final int minSection = this.slices.minSection;
++            final int maxSection = this.slices.maxSection;
++            final int min = Mth.clamp(Mth.floor(box.minY - 4.0) >> 4, minSection, maxSection);
++            final int max = Mth.clamp(Mth.floor(box.maxY) >> 4, minSection, maxSection);
++
++            for (int section = min; section <= max; ++section) {
++                if (!budget.tryScan()) {
++                    return true;
++                }
++                final BasicEntityList<Entity> list = this.entitiesBySection[section - minSection];
++                if (list == null) {
++                    continue;
++                }
++                final Entity[] storage = list.storage;
++                for (int i = 0, len = Math.min(storage.length, list.size()); i < len; ++i) {
++                    if (!budget.tryScan()) {
++                        return true;
++                    }
++                    final Entity entity = storage[i];
++                    if (entity == null || entity == except || !entity.getBoundingBox().intersects(box)) {
++                        continue;
++                    }
++                    into.add(entity);
++                    if (into.size() >= maxCount) {
++                        return true;
++                    }
++                }
++            }
++            return false;
++        }
++
+         public boolean getEntitiesLimited(final Entity except, final AABB box, final List<Entity> into, final Predicate<? super Entity> predicate,
+                                           final int maxCount) {
+             if (this.count == 0) {
+diff --git a/ca/spottedleaf/moonrise/patches/chunk_system/level/entity/EntityLookup.java b/ca/spottedleaf/moonrise/patches/chunk_system/level/entity/EntityLookup.java
+index 328784ba08236553e49d62320b79f7222292412f..67ecdb17331018b2cbe65d0d7afc76141c656e9e 100644
+--- a/ca/spottedleaf/moonrise/patches/chunk_system/level/entity/EntityLookup.java
++++ b/ca/spottedleaf/moonrise/patches/chunk_system/level/entity/EntityLookup.java
+@@ -12,6 +12,7 @@ import net.minecraft.util.AbortableIterationConsumer;
+ import net.minecraft.util.Mth;
+ import net.minecraft.world.entity.Entity;
+ import net.minecraft.world.entity.EntityType;
++import net.minecraft.world.entity.vehicle.minecart.AbstractMinecart;
+ import net.minecraft.world.level.ChunkPos;
+ import net.minecraft.world.level.Level;
+ import net.minecraft.world.level.entity.EntityInLevelCallback;
+@@ -37,6 +38,8 @@ import java.util.function.Predicate;
+ public abstract class EntityLookup implements LevelEntityGetter<Entity> {
+ 
+     private static final Logger LOGGER = LoggerFactory.getLogger(EntityLookup.class);
++    private static final int MAX_MINECARTS_PER_CHUNK = 100; // Scissors
++    private static final java.util.concurrent.atomic.AtomicLong NEXT_MINECART_LIMIT_WARNING = new java.util.concurrent.atomic.AtomicLong(); // Scissors
+ 
+     protected static final int REGION_SHIFT = 5;
+     protected static final int REGION_MASK = (1 << REGION_SHIFT) - 1;
+@@ -426,6 +429,20 @@ public abstract class EntityLookup implements LevelEntityGetter<Entity> {
+             return false;
+         }
+ 
++        // Scissors - cancel new spawns at the chunk limit. Leave saved carts and dimension transfers alone.
++        if (!fromDisk && event && !this.world.isClientSide() && entity instanceof AbstractMinecart
++            && this.getOrCreateChunk(sectionX, sectionZ).getMinecartCount() >= MAX_MINECARTS_PER_CHUNK) {
++            final long now = net.minecraft.util.Util.getMillis();
++            final long nextWarning = NEXT_MINECART_LIMIT_WARNING.get();
++            if (now >= nextWarning && NEXT_MINECART_LIMIT_WARNING.compareAndSet(nextWarning, now + 300_000L)) {
++                LOGGER.warn(
++                    "Cancelled minecart spawn at {} in {}: chunk {},{} already has at least {} minecarts. No existing carts were removed. Suppressing further minecart spawn warnings for 5 minutes",
++                    entity.blockPosition().toShortString(), this.world.dimension().identifier(), sectionX, sectionZ, MAX_MINECARTS_PER_CHUNK
++                );
++            }
++            return false;
++        }
++
+         Entity currentlyMapped = this.entityById.putIfAbsent((long)entity.getId(), entity);
+         if (currentlyMapped != null) {
+             LOGGER.warn("Entity id already exists: " + entity.getId() + ", mapped to " + currentlyMapped + ", can't add " + entity);
+@@ -728,6 +745,31 @@ public abstract class EntityLookup implements LevelEntityGetter<Entity> {
+ 
+     //////// Limited ////////
+ 
++    // Scissors - bound vehicle scans before intersection tests, not only after collecting matches.
++    public boolean getVehicleCollisionEntities(
++        final Entity except, final AABB box, final List<Entity> into, final int maxCount, final boolean hardOnly,
++        final net.minecraft.world.entity.vehicle.VehicleEntity.CollisionBudget budget
++    ) {
++        final int minChunkX = (Mth.floor(box.minX) - 2) >> 4;
++        final int minChunkZ = (Mth.floor(box.minZ) - 2) >> 4;
++        final int maxChunkX = (Mth.floor(box.maxX) + 2) >> 4;
++        final int maxChunkZ = (Mth.floor(box.maxZ) + 2) >> 4;
++
++        for (int chunkZ = minChunkZ; chunkZ <= maxChunkZ; ++chunkZ) {
++            for (int chunkX = minChunkX; chunkX <= maxChunkX; ++chunkX) {
++                if (!budget.tryScan()) {
++                    return true;
++                }
++                final ChunkEntitySlices chunk = this.getChunk(chunkX, chunkZ);
++                if (chunk != null && chunk.status.isOrAfter(FullChunkStatus.FULL)
++                    && chunk.getVehicleCollisionEntities(except, box, into, maxCount, hardOnly, budget)) {
++                    return true;
++                }
++            }
++        }
++        return false;
++    }
++
+     public void getEntities(final Entity except, final AABB box, final List<Entity> into, final Predicate<? super Entity> predicate,
+                             final int maxCount) {
+         final int minChunkX = (Mth.floor(box.minX) - 2) >> 4;
+diff --git a/ca/spottedleaf/moonrise/patches/collisions/CollisionUtil.java b/ca/spottedleaf/moonrise/patches/collisions/CollisionUtil.java
+index 54b2492c3ab6bf9ff52cec53dc4635f725f9eb4f..935086b2a3914c9c7239acb2719d588c3bb2f032 100644
+--- a/ca/spottedleaf/moonrise/patches/collisions/CollisionUtil.java
++++ b/ca/spottedleaf/moonrise/patches/collisions/CollisionUtil.java
+@@ -2088,7 +2088,9 @@ public final class CollisionUtil {
+         // specifically with boat collisions.
+         aabb = aabb.inflate(-COLLISION_EPSILON, -COLLISION_EPSILON, -COLLISION_EPSILON);
+         final List<Entity> entities;
+-        if (entity != null && ((ChunkSystemEntity)entity).moonrise$isHardColliding()) {
++        if (entity instanceof net.minecraft.world.entity.vehicle.VehicleEntity vehicle) {
++            entities = vehicle.getHardCollisionEntities(aabb, predicate); // Scissors - bound movement before predicates, events and shape collection
++        } else if (entity != null && ((ChunkSystemEntity)entity).moonrise$isHardColliding()) {
+             entities = world.getEntities(entity, aabb, predicate);
+         } else {
+             entities = ((ChunkSystemEntityGetter)world).moonrise$getHardCollidingEntities(entity, aabb, predicate);
 diff --git a/net/minecraft/server/level/ServerLevel.java b/net/minecraft/server/level/ServerLevel.java
-index 1009a96a9dba42d15029214bc34bf7e9593b0177..2d3eed58e9a8a4cfaa798be600c97e10fa9ea05a 100644
+index 530e34b323203e7469874e9f24e8819059edc3de..f97029d7ede7612fcedf66fc6d5185d828298c63 100644
 --- a/net/minecraft/server/level/ServerLevel.java
 +++ b/net/minecraft/server/level/ServerLevel.java
-@@ -1334,7 +1334,7 @@ public class ServerLevel extends Level implements WorldGenLevel, ServerEntityGet
+@@ -1645,7 +1645,7 @@ public class ServerLevel extends Level implements WorldGenLevel, ServerEntityGet
              }
              // CraftBukkit end
  
--            return this.entityManager.addNewEntity(entity);
-+            return this.entityManager.addNewEntity(entity, spawnReason != null); // Scissors - preserve dimension transfers
+-            return this.moonrise$getEntityLookup().addNewEntity(entity); // Paper - rewrite chunk system
++            return this.moonrise$getEntityLookup().addNewEntity(entity, spawnReason != null); // Paper - rewrite chunk system // Scissors - distinguish new spawns from dimension transfers
          }
      }
  
 diff --git a/net/minecraft/world/entity/vehicle/VehicleEntity.java b/net/minecraft/world/entity/vehicle/VehicleEntity.java
-index 96b0fa2ebab15a939a5162d23b3ad9b92365d818..4ba68d00dba0ddabb61577b7268d5f6514db98dd 100644
+index 96b0fa2ebab15a939a5162d23b3ad9b92365d818..08415eff1b4e54d3874106bfeccb07082c0767b3 100644
 --- a/net/minecraft/world/entity/vehicle/VehicleEntity.java
 +++ b/net/minecraft/world/entity/vehicle/VehicleEntity.java
 @@ -1,10 +1,17 @@
@@ -73,21 +269,21 @@ index 96b0fa2ebab15a939a5162d23b3ad9b92365d818..4ba68d00dba0ddabb61577b7268d5f65
      protected static final EntityDataAccessor<Integer> DATA_ID_HURT = SynchedEntityData.defineId(VehicleEntity.class, EntityDataSerializers.INT);
      protected static final EntityDataAccessor<Integer> DATA_ID_HURTDIR = SynchedEntityData.defineId(VehicleEntity.class, EntityDataSerializers.INT);
      protected static final EntityDataAccessor<Float> DATA_ID_DAMAGE = SynchedEntityData.defineId(VehicleEntity.class, EntityDataSerializers.FLOAT);
-@@ -131,6 +149,111 @@ public abstract class VehicleEntity extends Entity {
+@@ -131,6 +149,112 @@ public abstract class VehicleEntity extends Entity {
          return this.entityData.get(DATA_ID_HURTDIR);
      }
  
 +    // Scissors start - bound collision queries without destroying legitimate crowded vehicles
 +    protected List<Entity> getCollisionEntities(final AABB hitbox, final Predicate<? super Entity> predicate) {
-+        return this.getCollisionEntities(hitbox, predicate, this.pushCollisionBudget);
++        return this.getCollisionEntities(hitbox, predicate, this.pushCollisionBudget, false);
 +    }
 +
 +    public final List<Entity> getHardCollisionEntities(final AABB hitbox, final @Nullable Predicate<? super Entity> predicate) {
-+        return this.getCollisionEntities(hitbox, predicate, this.hardCollisionBudget);
++        return this.getCollisionEntities(hitbox, predicate, this.hardCollisionBudget, !this.moonrise$isHardColliding());
 +    }
 +
 +    private List<Entity> getCollisionEntities(
-+        final AABB hitbox, final @Nullable Predicate<? super Entity> predicate, final CollisionBudget budget
++        final AABB hitbox, final @Nullable Predicate<? super Entity> predicate, final CollisionBudget budget, final boolean hardOnly
 +    ) {
 +        int configuredLimit = this.level().isClientSide() ? MAX_VEHICLE_COLLISIONS : this.level().paperConfig().collisions.maxEntityCollisions;
 +        int collisionLimit = collisionLimit(configuredLimit);
@@ -104,9 +300,10 @@ index 96b0fa2ebab15a939a5162d23b3ad9b92365d818..4ba68d00dba0ddabb61577b7268d5f65
 +        }
 +
 +        List<Entity> candidates = new ArrayList<>(remaining + 1);
-+        // Dragon parts are neither pushable nor hard colliders. Query the section index directly.
-+        boolean truncated = this.level().getEntities().getVehicleCollisionEntities(
-+                this, hitbox, candidates, remaining + 1, budget
++        // Dragon parts are neither pushable nor hard colliders. Avoid Paper's global part scan here.
++        boolean truncated = ((ca.spottedleaf.moonrise.patches.chunk_system.level.ChunkSystemLevel)this.level())
++            .moonrise$getEntityLookup().getVehicleCollisionEntities(
++                this, hitbox, candidates, remaining + 1, hardOnly, budget
 +        );
 +        // Charge raw candidates before predicates or events can make a reentrant query.
 +        int examined = Math.min(candidates.size(), remaining);
@@ -280,231 +477,17 @@ index eece08119c52628d0918d90b595276210062b5ed..9cce40c0d3f20cc519b8152646216b4e
                      // CraftBukkit start
                      org.bukkit.event.vehicle.VehicleEntityCollisionEvent collisionEvent = new org.bukkit.event.vehicle.VehicleEntityCollisionEvent(
 diff --git a/net/minecraft/world/level/EntityGetter.java b/net/minecraft/world/level/EntityGetter.java
-index 892b338a2b0a185511c352ca2bb76ee3890836fd..6bf4a7c0f44f030e836d54b40669062a8fde2448 100644
+index cc938f43c4a5e947ed87ca2001cbaca4084bf64c..ff2373946a48be7a1c7fd33158a347986eb2cea7 100644
 --- a/net/minecraft/world/level/EntityGetter.java
 +++ b/net/minecraft/world/level/EntityGetter.java
-@@ -57,7 +57,10 @@ public interface EntityGetter {
-         }
+@@ -88,7 +88,9 @@ public interface EntityGetter extends ca.spottedleaf.moonrise.patches.chunk_syst
+         testArea = testArea.inflate(-ca.spottedleaf.moonrise.patches.collisions.CollisionUtil.COLLISION_EPSILON, -ca.spottedleaf.moonrise.patches.collisions.CollisionUtil.COLLISION_EPSILON, -ca.spottedleaf.moonrise.patches.collisions.CollisionUtil.COLLISION_EPSILON);
  
-         Predicate<Entity> canCollide = source == null ? EntitySelector.CAN_BE_COLLIDED_WITH : EntitySelector.NO_SPECTATORS.and(source::canCollideWith);
--        List<Entity> collidingEntities = this.getEntities(source, testArea.inflate(1.0E-7), canCollide);
-+        // Scissors - bound movement work before collision predicates and events run.
-+        List<Entity> collidingEntities = source instanceof net.minecraft.world.entity.vehicle.VehicleEntity vehicle
-+            ? vehicle.getHardCollisionEntities(testArea.inflate(1.0E-7), canCollide)
-+            : this.getEntities(source, testArea.inflate(1.0E-7), canCollide);
-         if (collidingEntities.isEmpty()) {
-             return List.of();
-         }
-diff --git a/net/minecraft/world/level/entity/EntitySection.java b/net/minecraft/world/level/entity/EntitySection.java
-index 924b956c437b88571e0a21420c572d03f53f7a7e..fcfb38ec2365318bf735965ec615f9e60bab745e 100644
---- a/net/minecraft/world/level/entity/EntitySection.java
-+++ b/net/minecraft/world/level/entity/EntitySection.java
-@@ -64,6 +64,23 @@ public class EntitySection<T extends EntityAccess> {
-         return this.storage.isEmpty();
-     }
- 
-+    // Scissors - count every visited entity, including entities outside the box.
-+    public boolean getVehicleCollisionEntities(final T except, final AABB box, final java.util.List<T> into, final int maxCount,
-+        final net.minecraft.world.entity.vehicle.VehicleEntity.CollisionBudget budget) {
-+        for (T entity : this.storage) {
-+            if (!budget.tryScan()) {
-+                return true;
-+            }
-+            if (entity != except && entity.getBoundingBox().intersects(box)) {
-+                into.add(entity);
-+                if (into.size() >= maxCount) {
-+                    return true;
-+                }
-+            }
-+        }
-+        return false;
-+    }
-+
-     public Stream<T> getEntities() {
-         return this.storage.stream();
-     }
-diff --git a/net/minecraft/world/level/entity/EntitySectionStorage.java b/net/minecraft/world/level/entity/EntitySectionStorage.java
-index f853c217ec89f9d23f00aa1551272271ea24fbe6..c15b6d72f3dfff0dca5de177b5a58461a290a097 100644
---- a/net/minecraft/world/level/entity/EntitySectionStorage.java
-+++ b/net/minecraft/world/level/entity/EntitySectionStorage.java
-@@ -92,6 +92,42 @@ public class EntitySectionStorage<T extends EntityAccess> {
-         );
-     }
- 
-+    // Scissors - bound traversal as well as results; an empty or nonintersecting region still costs work.
-+    public boolean getVehicleCollisionEntities(final T except, final AABB bb, final java.util.List<T> into, final int maxCount,
-+        final net.minecraft.world.entity.vehicle.VehicleEntity.CollisionBudget budget) {
-+        int xMin = SectionPos.posToSectionCoord(bb.minX - 2.0);
-+        int yMin = SectionPos.posToSectionCoord(bb.minY - 4.0);
-+        int zMin = SectionPos.posToSectionCoord(bb.minZ - 2.0);
-+        int xMax = SectionPos.posToSectionCoord(bb.maxX + 2.0);
-+        int yMax = SectionPos.posToSectionCoord(bb.maxY);
-+        int zMax = SectionPos.posToSectionCoord(bb.maxZ + 2.0);
-+        for (int x = xMin; x <= xMax; x++) {
-+            if (!budget.tryScan()) {
-+                return true;
-+            }
-+            long lowest = SectionPos.asLong(x, 0, 0);
-+            long highest = SectionPos.asLong(x, -1, -1);
-+            LongIterator sections = this.sectionIds.subSet(lowest, highest + 1L).iterator();
-+            while (sections.hasNext()) {
-+                if (!budget.tryScan()) {
-+                    return true;
-+                }
-+                long key = sections.nextLong();
-+                int y = SectionPos.y(key);
-+                int z = SectionPos.z(key);
-+                if (y < yMin || y > yMax || z < zMin || z > zMax) {
-+                    continue;
-+                }
-+                EntitySection<T> section = this.sections.get(key);
-+                if (section != null && section.getStatus().isAccessible()
-+                    && section.getVehicleCollisionEntities(except, bb, into, maxCount, budget)) {
-+                    return true;
-+                }
-+            }
-+        }
-+        return false;
-+    }
-+
-     private LongSortedSet getChunkSections(final int x, final int z) {
-         long lowestAbsoluteSectionKey = SectionPos.asLong(x, 0, z);
-         long highestAbsoluteSectionKey = SectionPos.asLong(x, -1, z);
-diff --git a/net/minecraft/world/level/entity/LevelEntityGetter.java b/net/minecraft/world/level/entity/LevelEntityGetter.java
-index 69980918241180346500ef0dbe6d115c57686e6f..096267e54faa2d5e3c601908393bde88b30042d2 100644
---- a/net/minecraft/world/level/entity/LevelEntityGetter.java
-+++ b/net/minecraft/world/level/entity/LevelEntityGetter.java
-@@ -7,6 +7,10 @@ import net.minecraft.world.phys.AABB;
- import org.jspecify.annotations.Nullable;
- 
- public interface LevelEntityGetter<T extends EntityAccess> {
-+    // Scissors - bound raw section scans before vehicle collision predicates run.
-+    boolean getVehicleCollisionEntities(T except, AABB box, java.util.List<T> into, int maxCount,
-+        net.minecraft.world.entity.vehicle.VehicleEntity.CollisionBudget budget);
-+
-     @Nullable T get(final int id);
- 
-     @Nullable T get(final UUID id);
-diff --git a/net/minecraft/world/level/entity/LevelEntityGetterAdapter.java b/net/minecraft/world/level/entity/LevelEntityGetterAdapter.java
-index 7474384d85acbc497b5797b023a1cba4100c588b..e51379f1f947d5114bc14ffb08e0da8fc1ff3df5 100644
---- a/net/minecraft/world/level/entity/LevelEntityGetterAdapter.java
-+++ b/net/minecraft/world/level/entity/LevelEntityGetterAdapter.java
-@@ -20,6 +20,13 @@ public class LevelEntityGetterAdapter<T extends EntityAccess> implements LevelEn
-         return this.visibleEntities.getEntity(id);
-     }
- 
-+    // Scissors - use the same section index as ordinary entity queries.
-+    @Override
-+    public boolean getVehicleCollisionEntities(final T except, final AABB box, final java.util.List<T> into, final int maxCount,
-+        final net.minecraft.world.entity.vehicle.VehicleEntity.CollisionBudget budget) {
-+        return this.sectionStorage.getVehicleCollisionEntities(except, box, into, maxCount, budget);
-+    }
-+
-     @Override
-     public @Nullable T get(final UUID id) {
-         return this.visibleEntities.getEntity(id);
-diff --git a/net/minecraft/world/level/entity/PersistentEntitySectionManager.java b/net/minecraft/world/level/entity/PersistentEntitySectionManager.java
-index d02ea8f2aef0bf855efa9a7954d80c777d174276..e67a9f4c4820137fca67c3ef5aa673f3942e83a4 100644
---- a/net/minecraft/world/level/entity/PersistentEntitySectionManager.java
-+++ b/net/minecraft/world/level/entity/PersistentEntitySectionManager.java
-@@ -31,6 +31,10 @@ import org.slf4j.Logger;
- 
- public class PersistentEntitySectionManager<T extends EntityAccess> implements AutoCloseable {
-     private static final Logger LOGGER = LogUtils.getLogger();
-+    // Scissors - count all loaded minecarts, but refuse only new spawns in full chunks.
-+    private static final int MAX_MINECARTS_PER_CHUNK = 100;
-+    private static final java.util.concurrent.atomic.AtomicLong NEXT_MINECART_WARNING = new java.util.concurrent.atomic.AtomicLong();
-+    private final it.unimi.dsi.fastutil.longs.Long2IntMap minecartCounts = new it.unimi.dsi.fastutil.longs.Long2IntOpenHashMap();
-     private final Set<UUID> knownUuids = Sets.newHashSet();
-     private final LevelCallback<T> callbacks;
-     public final EntityPersistentStorage<T> permanentStorage;
-@@ -82,7 +86,16 @@ public class PersistentEntitySectionManager<T extends EntityAccess> implements A
-         return this.addEntity(entity, false);
-     }
- 
-+    // Scissors - dimension transfers are admissions, not new spawns.
-+    public boolean addNewEntity(final T entity, final boolean newSpawn) {
-+        return this.addEntity(entity, false, newSpawn);
-+    }
-+
-     private boolean addEntity(final T entity, final boolean loaded) {
-+        return this.addEntity(entity, loaded, !loaded);
-+    }
-+
-+    private boolean addEntity(final T entity, final boolean loaded, final boolean newSpawn) {
-         org.spigotmc.AsyncCatcher.catchOp("Entity add"); // Paper
-         // Paper start - chunk system hooks
-         // I don't want to know why this is a generic type.
-@@ -94,6 +107,16 @@ public class PersistentEntitySectionManager<T extends EntityAccess> implements A
-             return false;
-         }
-         // Paper end - chunk system hooks
-+        // Scissors - check after callbacks and before UUID registration or client tracking.
-+        if (newSpawn && entity instanceof net.minecraft.world.entity.vehicle.minecart.AbstractMinecart
-+            && this.getMinecartCount(ChunkPos.pack(entity.blockPosition())) >= MAX_MINECARTS_PER_CHUNK) {
-+            long now = net.minecraft.util.Util.getMillis();
-+            long next = NEXT_MINECART_WARNING.get();
-+            if (now >= next && NEXT_MINECART_WARNING.compareAndSet(next, now + java.util.concurrent.TimeUnit.MINUTES.toMillis(5L))) {
-+                LOGGER.warn("Cancelled minecart spawn at {}: chunk already contains at least {} minecarts", entity.blockPosition(), MAX_MINECARTS_PER_CHUNK);
-+            }
-+            return false;
-+        }
-         if (!this.addEntityUuid(entity)) {
-             return false;
-         }
-@@ -101,6 +124,7 @@ public class PersistentEntitySectionManager<T extends EntityAccess> implements A
-         long sectionKey = SectionPos.asLong(entity.blockPosition());
-         EntitySection<T> entitySection = this.sectionStorage.getOrCreateSection(sectionKey);
-         entitySection.add(entity);
-+        this.updateMinecartCount(entity, sectionKey, 1); // Scissors
-         entity.setLevelCallback(new PersistentEntitySectionManager.Callback(entity, sectionKey, entitySection));
-         if (!loaded) {
-             this.callbacks.onCreated(entity);
-@@ -118,6 +142,23 @@ public class PersistentEntitySectionManager<T extends EntityAccess> implements A
-         return true;
-     }
- 
-+    public int getMinecartCount(final long chunkKey) {
-+        return this.minecartCounts.get(chunkKey);
-+    }
-+
-+    // Scissors - update the count through the existing section lifecycle, without scanning entities.
-+    private void updateMinecartCount(final T entity, final long sectionKey, final int change) {
-+        if (entity instanceof net.minecraft.world.entity.vehicle.minecart.AbstractMinecart) {
-+            long chunkKey = ChunkPos.pack(SectionPos.x(sectionKey), SectionPos.z(sectionKey));
-+            int count = this.minecartCounts.get(chunkKey) + change;
-+            if (count == 0) {
-+                this.minecartCounts.remove(chunkKey);
-+            } else {
-+                this.minecartCounts.put(chunkKey, count);
-+            }
-+        }
-+    }
-+
-     private static <T extends EntityAccess> Visibility getEffectiveStatus(final T entity, final Visibility status) {
-         return entity.isAlwaysTicking() ? Visibility.TICKING : status;
-     }
-@@ -439,11 +480,14 @@ public class PersistentEntitySectionManager<T extends EntityAccess> implements A
-                 if (!this.currentSection.remove(this.entity)) {
-                     PersistentEntitySectionManager.LOGGER
-                         .warn("Entity {} wasn't found in section {} (moving to {})", this.entity, SectionPos.of(this.currentSectionKey), newSectionPos);
-+                } else {
-+                    PersistentEntitySectionManager.this.updateMinecartCount(this.entity, this.currentSectionKey, -1); // Scissors
-                 }
- 
-                 PersistentEntitySectionManager.this.removeSectionIfEmpty(this.currentSectionKey, this.currentSection);
-                 EntitySection<T> newSection = PersistentEntitySectionManager.this.sectionStorage.getOrCreateSection(newSectionPos);
-                 newSection.add(this.entity);
-+                PersistentEntitySectionManager.this.updateMinecartCount(this.entity, newSectionPos, 1); // Scissors
-                 this.currentSection = newSection;
-                 this.currentSectionKey = newSectionPos;
-                 this.updateStatus(previousStatus, newSection.getStatus());
-@@ -486,6 +530,8 @@ public class PersistentEntitySectionManager<T extends EntityAccess> implements A
-             if (!this.currentSection.remove(this.entity)) {
-                 PersistentEntitySectionManager.LOGGER
-                     .warn("Entity {} wasn't found in section {} (destroying due to {})", this.entity, SectionPos.of(this.currentSectionKey), reason);
-+            } else {
-+                PersistentEntitySectionManager.this.updateMinecartCount(this.entity, this.currentSectionKey, -1); // Scissors
-             }
- 
-             Visibility status = PersistentEntitySectionManager.getEffectiveStatus(this.entity, this.currentSection.getStatus());
+         final List<Entity> entities;
+-        if (source != null && ((ca.spottedleaf.moonrise.patches.chunk_system.entity.ChunkSystemEntity)source).moonrise$isHardColliding()) {
++        if (source instanceof net.minecraft.world.entity.vehicle.VehicleEntity vehicle) {
++            entities = vehicle.getHardCollisionEntities(testArea, null); // Scissors - share the movement budget with the optimized collision path
++        } else if (source != null && ((ca.spottedleaf.moonrise.patches.chunk_system.entity.ChunkSystemEntity)source).moonrise$isHardColliding()) {
+             entities = this.getEntities(source, testArea, null);
+         } else {
+             entities = ((ca.spottedleaf.moonrise.patches.chunk_system.world.ChunkSystemEntityGetter)this).moonrise$getHardCollidingEntities(source, testArea, null);
