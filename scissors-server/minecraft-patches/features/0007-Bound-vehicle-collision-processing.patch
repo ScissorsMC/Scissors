@@ -19,7 +19,7 @@ age tracking or per-tick scans. Do not remove carts or cargo. Leave saved
 piles, movement and dimension transfers alone. Keep warnings infrequent.
 
 diff --git a/ca/spottedleaf/moonrise/patches/chunk_system/level/entity/ChunkEntitySlices.java b/ca/spottedleaf/moonrise/patches/chunk_system/level/entity/ChunkEntitySlices.java
-index 01873fc32799c3429771ef6da77d370b83b630e8..ca3040b2add2d2378935439c225c308ed918ba6f 100644
+index 5b7ed8e5067683143c99473a126e17baa531903c..b92ab44b3a2682a8f9479302fbbb3f835bd332f1 100644
 --- a/ca/spottedleaf/moonrise/patches/chunk_system/level/entity/ChunkEntitySlices.java
 +++ b/ca/spottedleaf/moonrise/patches/chunk_system/level/entity/ChunkEntitySlices.java
 @@ -19,6 +19,7 @@ import net.minecraft.util.ProblemReporter;
@@ -42,7 +42,7 @@ index 01873fc32799c3429771ef6da77d370b83b630e8..ca3040b2add2d2378935439c225c308e
  
      public FullChunkStatus status;
      public final ChunkData chunkData;
-@@ -249,6 +255,10 @@ public final class ChunkEntitySlices {
+@@ -260,6 +266,10 @@ public final class ChunkEntitySlices {
          if (!this.entities.add(entity)) {
              return false;
          }
@@ -53,7 +53,7 @@ index 01873fc32799c3429771ef6da77d370b83b630e8..ca3040b2add2d2378935439c225c308e
          ((ChunkSystemEntity)entity).moonrise$setChunkStatus(this.status);
          ((ChunkSystemEntity)entity).moonrise$setChunkData(this.chunkData);
          final int sectionIndex = chunkSection - this.minSection;
-@@ -283,6 +293,10 @@ public final class ChunkEntitySlices {
+@@ -294,6 +304,10 @@ public final class ChunkEntitySlices {
          if (!this.entities.remove(entity)) {
              return false;
          }
@@ -64,7 +64,7 @@ index 01873fc32799c3429771ef6da77d370b83b630e8..ca3040b2add2d2378935439c225c308e
          ((ChunkSystemEntity)entity).moonrise$setChunkStatus(null);
          ((ChunkSystemEntity)entity).moonrise$setChunkData(null);
          final int sectionIndex = chunkSection - this.minSection;
-@@ -316,6 +330,14 @@ public final class ChunkEntitySlices {
+@@ -327,6 +341,14 @@ public final class ChunkEntitySlices {
          this.allEntities.getEntities(except, box, into, predicate);
      }
  
@@ -79,7 +79,7 @@ index 01873fc32799c3429771ef6da77d370b83b630e8..ca3040b2add2d2378935439c225c308e
  
      public boolean getEntities(final Entity except, final AABB box, final List<Entity> into, final Predicate<? super Entity> predicate,
                                 final int maxCount) {
-@@ -545,6 +567,45 @@ public final class ChunkEntitySlices {
+@@ -556,6 +578,45 @@ public final class ChunkEntitySlices {
              }
          }
  
@@ -215,10 +215,10 @@ index 54b2492c3ab6bf9ff52cec53dc4635f725f9eb4f..935086b2a3914c9c7239acb2719d588c
          } else {
              entities = ((ChunkSystemEntityGetter)world).moonrise$getHardCollidingEntities(entity, aabb, predicate);
 diff --git a/net/minecraft/server/level/ServerLevel.java b/net/minecraft/server/level/ServerLevel.java
-index 530e34b323203e7469874e9f24e8819059edc3de..f97029d7ede7612fcedf66fc6d5185d828298c63 100644
+index 5c581c22fd8935f16abd62ae18d0c811af6a41de..3821c9e1c155a07388d148a47e1f5e52e4d31931 100644
 --- a/net/minecraft/server/level/ServerLevel.java
 +++ b/net/minecraft/server/level/ServerLevel.java
-@@ -1645,7 +1645,7 @@ public class ServerLevel extends Level implements WorldGenLevel, ServerEntityGet
+@@ -1668,7 +1668,7 @@ public class ServerLevel extends Level implements WorldGenLevel, ServerEntityGet
              }
              // CraftBukkit end
  
