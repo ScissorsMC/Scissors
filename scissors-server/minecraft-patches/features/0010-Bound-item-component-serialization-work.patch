@@ -387,10 +387,10 @@ index 99668e7ac52fa079d7a475ff3fc3b63c566b2d63..0efe0b967ce2a2ec8a19305fe5410793
  
      public static DataComponentPatch.Builder builder() {
 diff --git a/net/minecraft/server/network/ServerGamePacketListenerImpl.java b/net/minecraft/server/network/ServerGamePacketListenerImpl.java
-index 240a6c8b3cf4978c71491bb474976f3b431af1a0..735dbab9046844ec2db057e27b74651ad9b81ee8 100644
+index caded4dd7fb547a5e83f2e18bc0a5edd91e1586a..91999767d674dfb79174556fa29d3db9a7dc5c0f 100644
 --- a/net/minecraft/server/network/ServerGamePacketListenerImpl.java
 +++ b/net/minecraft/server/network/ServerGamePacketListenerImpl.java
-@@ -3561,7 +3561,7 @@ public class ServerGamePacketListenerImpl
+@@ -3640,7 +3640,7 @@ public class ServerGamePacketListenerImpl
              if (!sanitizedItem.isEmpty() && ItemStack.validateStrict(sanitizedItem).isError()) {
                  sanitizedItem = ItemStack.EMPTY;
              }
@@ -400,7 +400,7 @@ index 240a6c8b3cf4978c71491bb474976f3b431af1a0..735dbab9046844ec2db057e27b74651a
                  long now = Util.getMillis();
                  if (now - this.lastUnsafeCreativeItemWarning >= UNSAFE_CREATIVE_ITEM_LOG_INTERVAL) {
 diff --git a/net/minecraft/world/item/ItemStack.java b/net/minecraft/world/item/ItemStack.java
-index 7ffc36b761855f263363cdc80b6843fceb221484..b0e04d8c79e8e52a905269f6a852a4984424740b 100644
+index 9802f73880a1c1f09d677b74616bb03001d63dac..58f7997a16d688dc4bfa59ab16b120d2b66c4aee 100644
 --- a/net/minecraft/world/item/ItemStack.java
 +++ b/net/minecraft/world/item/ItemStack.java
 @@ -169,6 +169,7 @@ public final class ItemStack implements DataComponentHolder, ItemInstance {

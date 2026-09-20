@@ -16,7 +16,7 @@
      private double firstGoodX;
      private double firstGoodY;
      private double firstGoodZ;
-@@ -3459,11 +_,28 @@
+@@ -3538,11 +_,28 @@
              }
  
              boolean validSlot = packet.slotNum() >= 1 && packet.slotNum() <= 45;
@@ -47,7 +47,7 @@
  
                  SlotType type = SlotType.QUICKBAR;
                  if (drop) {
-@@ -3479,6 +_,21 @@
+@@ -3558,6 +_,21 @@
                  this.cserver.getPluginManager().callEvent(event);
  
                  itemStack = CraftItemStack.asNMSCopy(event.getCursor());
@@ -69,7 +69,7 @@
  
                  switch (event.getResult()) {
                      case ALLOW:
-@@ -3510,6 +_,19 @@
+@@ -3589,6 +_,19 @@
                      LOGGER.warn("Player {} was dropping items too fast in creative mode, ignoring.", this.player.getPlainTextName());
                  }
              }
