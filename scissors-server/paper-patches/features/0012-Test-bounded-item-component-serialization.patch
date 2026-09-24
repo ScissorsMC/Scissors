@@ -322,10 +322,10 @@ index 1081e24e4c0a51b791581f9e82556ea63b427b75..9e17ebae524a34f838e448a1feeb230d
                  builder.accept(prefix);
              }
 diff --git a/src/test/java/io/papermc/paper/adventure/DecimatorTest.java b/src/test/java/io/papermc/paper/adventure/DecimatorTest.java
-index acb24f095064b8cc53949ea02c94d0f10b8c78ab..2f638becfb96b00c9133d7c289ecc6f006dc0b63 100644
+index 1f8abdbae4e83dc560db385f3cb79829a5997a81..b53156eb049df60ae7cc5418410af1b3c6744c6d 100644
 --- a/src/test/java/io/papermc/paper/adventure/DecimatorTest.java
 +++ b/src/test/java/io/papermc/paper/adventure/DecimatorTest.java
-@@ -62,12 +62,14 @@ class DecimatorTest {
+@@ -74,12 +74,14 @@ class DecimatorTest {
      }
  
      @Test

@@ -387,10 +387,10 @@ index 99668e7ac52fa079d7a475ff3fc3b63c566b2d63..0efe0b967ce2a2ec8a19305fe5410793
  
      public static DataComponentPatch.Builder builder() {
 diff --git a/net/minecraft/server/network/ServerGamePacketListenerImpl.java b/net/minecraft/server/network/ServerGamePacketListenerImpl.java
-index caded4dd7fb547a5e83f2e18bc0a5edd91e1586a..91999767d674dfb79174556fa29d3db9a7dc5c0f 100644
+index a6e936b3955bb7d27c488069aa665e0e95081b05..f60734fe8e9ed6c3108983d0301956a13be12ed1 100644
 --- a/net/minecraft/server/network/ServerGamePacketListenerImpl.java
 +++ b/net/minecraft/server/network/ServerGamePacketListenerImpl.java
-@@ -3640,7 +3640,7 @@ public class ServerGamePacketListenerImpl
+@@ -3648,7 +3648,7 @@ public class ServerGamePacketListenerImpl
              if (!sanitizedItem.isEmpty() && ItemStack.validateStrict(sanitizedItem).isError()) {
                  sanitizedItem = ItemStack.EMPTY;
              }

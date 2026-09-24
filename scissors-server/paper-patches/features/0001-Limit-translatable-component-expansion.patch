@@ -6,10 +6,10 @@ Subject: [PATCH] Limit translatable component expansion
 Repeated translation arguments can expand a small component exponentially during flattening. Cap argument expansion and nesting so malicious payloads cannot exhaust server resources.
 
 diff --git a/src/main/java/io/papermc/paper/adventure/PaperAdventure.java b/src/main/java/io/papermc/paper/adventure/PaperAdventure.java
-index ffe7398e49b970b25a753161cff020a5466519c7..048fd7cd38109d719114608fbff9fcc502bc12ed 100644
+index 401353b63873fdfa56c9e1dbba4bf117f5602bac..1dbd3cd3181bc6c911a0a04bb5b573c24d198d5b 100644
 --- a/src/main/java/io/papermc/paper/adventure/PaperAdventure.java
 +++ b/src/main/java/io/papermc/paper/adventure/PaperAdventure.java
-@@ -64,6 +64,10 @@ import static java.util.Objects.requireNonNull;
+@@ -66,6 +66,10 @@ import static java.util.Objects.requireNonNull;
  
  public final class PaperAdventure {
      private static final Pattern LOCALIZATION_PATTERN = Pattern.compile("%(?:(\\d+)\\$)?s");
@@ -20,7 +20,7 @@ index ffe7398e49b970b25a753161cff020a5466519c7..048fd7cd38109d719114608fbff9fcc5
      public static final ComponentFlattener FLATTENER = ComponentFlattener.basic().toBuilder()
          .complexMapper(TranslatableComponent.class, (translatable, consumer) -> {
              final Language language = Language.getInstance();
-@@ -80,6 +84,7 @@ public final class PaperAdventure {
+@@ -82,6 +86,7 @@ public final class PaperAdventure {
              final List<TranslationArgument> args = translatable.arguments();
              int argPosition = 0;
              int lastIdx = 0;
@@ -28,7 +28,7 @@ index ffe7398e49b970b25a753161cff020a5466519c7..048fd7cd38109d719114608fbff9fcc5
              while (matcher.find()) {
                  // append prior
                  if (lastIdx < matcher.start()) {
-@@ -93,6 +98,12 @@ public final class PaperAdventure {
+@@ -95,6 +100,12 @@ public final class PaperAdventure {
                      try {
                          final int idx = Integer.parseInt(argIdx) - 1;
                          if (idx < args.size()) {
@@ -41,7 +41,7 @@ index ffe7398e49b970b25a753161cff020a5466519c7..048fd7cd38109d719114608fbff9fcc5
                              consumer.accept(args.get(idx).asComponent());
                          }
                      } catch (final NumberFormatException ex) {
-@@ -101,6 +112,12 @@ public final class PaperAdventure {
+@@ -103,6 +114,12 @@ public final class PaperAdventure {
                  } else {
                      final int idx = argPosition++;
                      if (idx < args.size()) {
@@ -54,7 +54,7 @@ index ffe7398e49b970b25a753161cff020a5466519c7..048fd7cd38109d719114608fbff9fcc5
                          consumer.accept(args.get(idx).asComponent());
                      }
                  }
-@@ -111,6 +128,7 @@ public final class PaperAdventure {
+@@ -113,6 +130,7 @@ public final class PaperAdventure {
                  consumer.accept(Component.text(translated.substring(lastIdx)));
              }
          })
@@ -64,14 +64,15 @@ index ffe7398e49b970b25a753161cff020a5466519c7..048fd7cd38109d719114608fbff9fcc5
      public static final ANSIComponentSerializer ANSI_SERIALIZER = ANSIComponentSerializer.builder().flattener(FLATTENER).build();
 diff --git a/src/test/java/io/papermc/paper/adventure/DecimatorTest.java b/src/test/java/io/papermc/paper/adventure/DecimatorTest.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..acb24f095064b8cc53949ea02c94d0f10b8c78ab
+index 0000000000000000000000000000000000000000..1f8abdbae4e83dc560db385f3cb79829a5997a81
 --- /dev/null
 +++ b/src/test/java/io/papermc/paper/adventure/DecimatorTest.java
-@@ -0,0 +1,134 @@
+@@ -0,0 +1,146 @@
 +package io.papermc.paper.adventure;
 +
 +import com.mojang.serialization.JsonOps;
 +import io.netty.buffer.Unpooled;
++import java.util.Locale;
 +import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
 +import net.minecraft.core.component.DataComponentType;
 +import net.minecraft.core.component.DataComponents;
@@ -117,6 +118,17 @@ index 0000000000000000000000000000000000000000..acb24f095064b8cc53949ea02c94d0f1
 +            PaperAdventure.asVanilla(net.kyori.adventure.text.Component.text("safe"))
 +        ).isSuccess());
 +        assertFalse(ComponentSerialization.CODEC.encodeStart(JsonOps.INSTANCE, component).isSuccess());
++    }
++
++    @Test
++    void rejectsComplexComponentsWithCachedLocalizedCodecs() {
++        final Component component = nestedVanillaComponent(4);
++
++        for (final Locale locale : new Locale[] {Locale.US, Locale.FRANCE, Locale.US}) {
++            final var codec = ComponentSerialization.localizedCodec(locale);
++            assertTrue(codec.encodeStart(JsonOps.INSTANCE, Component.literal("safe")).isSuccess());
++            assertFalse(codec.encodeStart(JsonOps.INSTANCE, component).isSuccess());
++        }
 +    }
 +
 +    @Test
