@@ -1,5 +1,14 @@
 --- a/paper-server/build.gradle.kts
 +++ b/paper-server/build.gradle.kts
+@@ -8,7 +_,7 @@
+     `maven-publish`
+     idea
+     id("io.papermc.paperweight.core")
+-    id("io.papermc.fill.gradle") version "1.0.12"
++    id("io.papermc.fill.gradle") version "1.0.13"
+ }
+ 
+ val paperMavenPublicUrl = "https://repo.papermc.io/repository/maven-public/"
 @@ -22,6 +_,17 @@
      minecraftVersion = providers.gradleProperty("mcVersion")
      gitFilePatches = false
