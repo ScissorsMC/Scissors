@@ -1,14 +1,5 @@
 --- a/paper-server/build.gradle.kts
 +++ b/paper-server/build.gradle.kts
-@@ -8,7 +_,7 @@
-     `maven-publish`
-     idea
-     id("io.papermc.paperweight.core")
--    id("io.papermc.fill.gradle") version "1.0.12"
-+    id("io.papermc.fill.gradle") version "1.0.13"
- }
- 
- val paperMavenPublicUrl = "https://repo.papermc.io/repository/maven-public/"
 @@ -22,6 +_,17 @@
      minecraftVersion = providers.gradleProperty("mcVersion")
      gitFilePatches = false
@@ -55,10 +46,10 @@
  dependencies {
 -    implementation(project(":paper-api"))
 +    implementation(project(":scissors-api"))
-     implementation("ca.spottedleaf:leafpile:1.2.2")
-     implementation("org.jline:jline-terminal-ffm:3.27.1") // use ffm on java 22+
-     implementation("org.jline:jline-terminal-jni:3.27.1") // fall back to jni on java 21
-@@ -171,18 +_,19 @@
+     implementation(platform("ca.spottedleaf.leafpile:bom:1.2.4"))
+     implementation("ca.spottedleaf.leafpile:common")
+     implementation("ca.spottedleaf.leafpile:concurrentutil")
+@@ -174,18 +_,19 @@
          val gitBranch = git.exec(providers, "rev-parse", "--abbrev-ref", "HEAD").get().trim()
          attributes(
              "Main-Class" to "org.bukkit.craftbukkit.Main",
@@ -83,7 +74,7 @@
          )
          for (tld in setOf("net", "com", "org")) {
              attributes("$tld/bukkit", "Sealed" to true)
-@@ -246,7 +_,7 @@
+@@ -249,7 +_,7 @@
      jvmArgumentProviders.add(provider)
  }
  
@@ -92,7 +83,7 @@
  idea {
      module {
          generatedSourceDirs.add(generatedDir.toFile())
-@@ -328,7 +_,7 @@
+@@ -331,7 +_,7 @@
  }
  
  fill {

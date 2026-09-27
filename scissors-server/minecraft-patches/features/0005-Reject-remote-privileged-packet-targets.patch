@@ -46,7 +46,7 @@ index 20c1ebd9514b0e2b0e8014d052c9d760c5daaf28..b3f5496f0470e544e659fe1d43785e62
          return this.command;
      }
 diff --git a/net/minecraft/server/network/ServerGamePacketListenerImpl.java b/net/minecraft/server/network/ServerGamePacketListenerImpl.java
-index 69c0844c2b30474ea6291e2ab35d7836f11281a6..a6e936b3955bb7d27c488069aa665e0e95081b05 100644
+index f8d157965bdb68c1536ec80bd9ba3ed2d6bff94f..a75c6ace670a33f37bf1900953ae4053c723e6a2 100644
 --- a/net/minecraft/server/network/ServerGamePacketListenerImpl.java
 +++ b/net/minecraft/server/network/ServerGamePacketListenerImpl.java
 @@ -273,6 +273,8 @@ public class ServerGamePacketListenerImpl
@@ -66,7 +66,7 @@ index 69c0844c2b30474ea6291e2ab35d7836f11281a6..a6e936b3955bb7d27c488069aa665e0e
      private double firstGoodX;
      private double firstGoodY;
      private double firstGoodZ;
-@@ -968,9 +971,12 @@ public class ServerGamePacketListenerImpl
+@@ -966,9 +969,12 @@ public class ServerGamePacketListenerImpl
          if (!this.player.canUseGameMasterBlocks() && (!this.player.isCreative() || !this.player.getBukkitEntity().hasPermission("minecraft.commandblock"))) { // Paper - command block permission
              this.player.sendSystemMessage(Component.translatable("advMode.notAllowed"));
          } else {
@@ -80,7 +80,7 @@ index 69c0844c2b30474ea6291e2ab35d7836f11281a6..a6e936b3955bb7d27c488069aa665e0e
              BlockEntity blockEntity = this.player.level().getBlockEntity(blockPos);
              if (blockEntity instanceof CommandBlockEntity commandBlockEntity) {
                  autoCommandBlock = commandBlockEntity;
-@@ -1029,7 +1035,12 @@ public class ServerGamePacketListenerImpl
+@@ -1027,7 +1033,12 @@ public class ServerGamePacketListenerImpl
          if (!this.player.canUseGameMasterBlocks() && (!this.player.isCreative() || !this.player.getBukkitEntity().hasPermission("minecraft.commandblock"))) { // Paper - command block permission
              this.player.sendSystemMessage(Component.translatable("advMode.notAllowed"));
          } else {
@@ -94,7 +94,7 @@ index 69c0844c2b30474ea6291e2ab35d7836f11281a6..a6e936b3955bb7d27c488069aa665e0e
              if (commandBlock != null) {
                  String command = packet.getCommand();
                  commandBlock.setCommand(command);
-@@ -1201,6 +1212,9 @@ public class ServerGamePacketListenerImpl
+@@ -1199,6 +1210,9 @@ public class ServerGamePacketListenerImpl
          PacketUtils.ensureRunningOnSameThread(packet, this, this.player.level());
          if (this.player.canUseGameMasterBlocks()) {
              BlockPos blockPos = packet.getPos();
@@ -104,7 +104,7 @@ index 69c0844c2b30474ea6291e2ab35d7836f11281a6..a6e936b3955bb7d27c488069aa665e0e
              BlockState state = this.player.level().getBlockState(blockPos);
              if (this.player.level().getBlockEntity(blockPos) instanceof StructureBlockEntity structure) {
                  structure.setMode(packet.getMode());
-@@ -1254,6 +1268,9 @@ public class ServerGamePacketListenerImpl
+@@ -1252,6 +1266,9 @@ public class ServerGamePacketListenerImpl
          PacketUtils.ensureRunningOnSameThread(packet, this, this.player.level());
          if (this.player.canUseGameMasterBlocks()) {
              BlockPos blockPos = packet.position();
@@ -114,7 +114,7 @@ index 69c0844c2b30474ea6291e2ab35d7836f11281a6..a6e936b3955bb7d27c488069aa665e0e
              BlockState initialState = this.player.level().getBlockState(blockPos);
              if (this.player.level().getBlockEntity(blockPos) instanceof TestBlockEntity testBlock) {
                  testBlock.setMode(packet.mode());
-@@ -1268,10 +1285,25 @@ public class ServerGamePacketListenerImpl
+@@ -1266,10 +1283,25 @@ public class ServerGamePacketListenerImpl
      public void handleTestInstanceBlockAction(final ServerboundTestInstanceBlockActionPacket packet) {
          PacketUtils.ensureRunningOnSameThread(packet, this, this.player.level());
          BlockPos pos = packet.pos();
@@ -142,7 +142,7 @@ index 69c0844c2b30474ea6291e2ab35d7836f11281a6..a6e936b3955bb7d27c488069aa665e0e
                  if (packet.action() == ServerboundTestInstanceBlockActionPacket.Action.RESET) {
                      blockEntity.resetTest(this.player::sendSystemMessage);
                  } else if (packet.action() == ServerboundTestInstanceBlockActionPacket.Action.SAVE) {
-@@ -1313,6 +1345,9 @@ public class ServerGamePacketListenerImpl
+@@ -1311,6 +1343,9 @@ public class ServerGamePacketListenerImpl
          PacketUtils.ensureRunningOnSameThread(packet, this, this.player.level());
          if (this.player.canUseGameMasterBlocks()) {
              BlockPos blockPos = packet.getPos();
@@ -152,7 +152,7 @@ index 69c0844c2b30474ea6291e2ab35d7836f11281a6..a6e936b3955bb7d27c488069aa665e0e
              BlockState state = this.player.level().getBlockState(blockPos);
              if (this.player.level().getBlockEntity(blockPos) instanceof JigsawBlockEntity jigsaw) {
                  jigsaw.setName(packet.getName());
-@@ -1333,6 +1368,13 @@ public class ServerGamePacketListenerImpl
+@@ -1331,6 +1366,13 @@ public class ServerGamePacketListenerImpl
          PacketUtils.ensureRunningOnSameThread(packet, this, this.player.level());
          if (this.player.canUseGameMasterBlocks()) {
              BlockPos blockPos = packet.getPos();
@@ -166,7 +166,7 @@ index 69c0844c2b30474ea6291e2ab35d7836f11281a6..a6e936b3955bb7d27c488069aa665e0e
              if (this.player.level().getBlockEntity(blockPos) instanceof JigsawBlockEntity jigsaw) {
                  jigsaw.generate(this.player.level(), packet.levels(), packet.keepJigsaws());
              }
-@@ -1456,7 +1498,7 @@ public class ServerGamePacketListenerImpl
+@@ -1454,7 +1496,7 @@ public class ServerGamePacketListenerImpl
          PacketUtils.ensureRunningOnSameThread(packet, this, this.player.level());
          if (this.player.permissions().hasPermission(Permissions.COMMANDS_GAMEMASTER)) {
              Entity entity = this.player.level().getEntity(packet.getEntityId());
@@ -175,7 +175,7 @@ index 69c0844c2b30474ea6291e2ab35d7836f11281a6..a6e936b3955bb7d27c488069aa665e0e
                  try (ProblemReporter.ScopedCollector reporter = new ProblemReporter.ScopedCollector(entity.problemPath(), LOGGER)) {
                      TagValueOutput output = TagValueOutput.createWithContext(reporter, entity.registryAccess());
                      entity.saveWithoutId(output);
-@@ -1480,13 +1522,48 @@ public class ServerGamePacketListenerImpl
+@@ -1478,13 +1520,48 @@ public class ServerGamePacketListenerImpl
      @Override
      public void handleBlockEntityTagQuery(final ServerboundBlockEntityTagQueryPacket packet) {
          PacketUtils.ensureRunningOnSameThread(packet, this, this.player.level());
