@@ -10,3 +10,6 @@
 # Binary files should be left untouched
 *.jar           binary
 
+# Mail and file patches contain single-space context lines by design.
+*.patch         whitespace=-blank-at-eol
+
