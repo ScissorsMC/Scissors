@@ -102,5 +102,4 @@ jobs:
         env:
           FILL_API_URL: ${{ secrets.FILL_API_URL }}
           FILL_API_KEY: ${{ secrets.FILL_API_KEY }}
-        # fill-gradle 1.0.13 is not configuration-cache compatible
-        run: ./gradlew :scissors-server:publishToFill --no-configuration-cache --stacktrace
+        run: ./gradlew :scissors-server:publishToFill --stacktrace
