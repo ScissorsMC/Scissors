@@ -6,7 +6,7 @@ Subject: [PATCH] Bound item component serialization work
 Reject or strip component values whose encoded structure exceeds a shared complexity budget before codec traversal can stall the server. Apply the same rule to persistent and network boundaries so alternate component carriers cannot bypass it.
 
 diff --git a/net/minecraft/core/component/DataComponentPatch.java b/net/minecraft/core/component/DataComponentPatch.java
-index e6de3f1c863b42522b7d0a46b2a314986d22dae9..2bedd42856934bb20160f2434bc111c55c685622 100644
+index e6de3f1c863b42522b7d0a46b2a314986d22dae9..5405802c11747eb0954bf3e19140dc8c778f048d 100644
 --- a/net/minecraft/core/component/DataComponentPatch.java
 +++ b/net/minecraft/core/component/DataComponentPatch.java
 @@ -1,26 +1,46 @@
@@ -228,7 +228,7 @@ index e6de3f1c863b42522b7d0a46b2a314986d22dae9..2bedd42856934bb20160f2434bc111c5
                  } catch (final Exception e) {
                      throw new RuntimeException("Error encoding component " + type, e);
                  }
-@@ -162,8 +242,171 @@ public final class DataComponentPatch {
+@@ -162,8 +242,186 @@ public final class DataComponentPatch {
          };
      }
  
@@ -341,8 +341,23 @@ index e6de3f1c863b42522b7d0a46b2a314986d22dae9..2bedd42856934bb20160f2434bc111c5
 +        DynamicOps<io.papermc.paper.util.CountingOps.Value> countingOps = contextOps instanceof RegistryOps<?> registryOps
 +            ? ((RegistryOps)registryOps).withParent(COMPONENT_COUNTING_OPS)
 +            : COMPONENT_COUNTING_OPS;
-+        DataResult<io.papermc.paper.util.CountingOps.Value> encoded = ((Codec)type.codecOrThrow()).encodeStart(countingOps, value);
-+        return encoded.result().orElse(null);
++        try {
++            DataResult<io.papermc.paper.util.CountingOps.Value> encoded = ((Codec)type.codecOrThrow()).encodeStart(countingOps, value);
++            return encoded.result().orElse(null);
++        } catch (final com.google.common.util.concurrent.UncheckedExecutionException exception) {
++            // Scissors - cached component codecs wrap budget failures; restore them for component sanitation.
++            Throwable cause = exception.getCause();
++            while (cause instanceof com.google.common.util.concurrent.UncheckedExecutionException) {
++                cause = cause.getCause();
++            }
++            if (cause instanceof DecoderException budgetException) {
++                throw budgetException;
++            }
++            if (cause instanceof ArithmeticException budgetException) {
++                throw budgetException;
++            }
++            throw exception;
++        }
 +    }
 +
 +    private static int maxUntrustedNetworkBytes(final DataComponentType<?> type) {
