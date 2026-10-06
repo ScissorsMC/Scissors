@@ -49,7 +49,7 @@
      implementation(platform("ca.spottedleaf.leafpile:bom:1.2.4"))
      implementation("ca.spottedleaf.leafpile:common")
      implementation("ca.spottedleaf.leafpile:concurrentutil")
-@@ -174,18 +_,19 @@
+@@ -173,18 +_,19 @@
          val gitBranch = git.exec(providers, "rev-parse", "--abbrev-ref", "HEAD").get().trim()
          attributes(
              "Main-Class" to "org.bukkit.craftbukkit.Main",
@@ -74,7 +74,7 @@
          )
          for (tld in setOf("net", "com", "org")) {
              attributes("$tld/bukkit", "Sealed" to true)
-@@ -249,7 +_,7 @@
+@@ -248,7 +_,7 @@
      jvmArgumentProviders.add(provider)
  }
  
@@ -83,7 +83,7 @@
  idea {
      module {
          generatedSourceDirs.add(generatedDir.toFile())
-@@ -331,7 +_,7 @@
+@@ -330,7 +_,7 @@
  }
  
  fill {
