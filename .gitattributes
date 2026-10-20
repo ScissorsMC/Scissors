@@ -11,5 +11,5 @@
 *.jar           binary
 
 # Mail and file patches contain single-space context lines by design.
-*.patch         whitespace=-blank-at-eol
+*.patch         whitespace=-blank-at-eol,-blank-at-eof
 

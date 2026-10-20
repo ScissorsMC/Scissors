@@ -40,6 +40,15 @@ create the runnable Paperclip JAR.
 
 ## Development
 
+Scissors removes non-finite item attribute amounts and restricts item camera overlays to the vanilla pumpkin overlay
+in the head slot. Custom resource-pack camera overlays are removed. Players cannot equip items in the animal body or
+saddle slots. These limits also apply to nested items and item templates.
+
+Scissors repairs affected player equipment automatically on load and before equipment updates. It removes the hidden
+equipment effects and returns the sanitized items to normal inventory. If the inventory is full, Scissors saves the
+recovered items with the player and returns them when space is available. No repair command is required. Check the
+server log for the player and the equipment slot that Scissors repaired.
+
 Scissors uses
 [paperweight](https://github.com/PaperMC/paperweight) to store changes as Git
 patches over a pinned Paper commit. Applied Paper and Minecraft worktrees are
