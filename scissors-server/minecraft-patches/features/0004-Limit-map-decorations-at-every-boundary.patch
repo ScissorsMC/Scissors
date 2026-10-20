@@ -174,7 +174,7 @@ index 4b6d7817847a3105c744723c85b1cf9955b3847e..73e9ee313b00dfaa0776cdf84605807d
          return new MapDecorations(Util.copyAndPut(this.decorations, id, entry));
      }
 diff --git a/net/minecraft/world/level/saveddata/maps/MapItemSavedData.java b/net/minecraft/world/level/saveddata/maps/MapItemSavedData.java
-index f05ab5fdab4cb587974e2864e859e49375f8165e..9bd31436715f55f4af180ffac1585ddd03f80657 100644
+index 1c8b9c0a1f615dedca9028379a1d8f60e9c39947..7dc46e452a9171a7881be6fe8ba2343fad398f1d 100644
 --- a/net/minecraft/world/level/saveddata/maps/MapItemSavedData.java
 +++ b/net/minecraft/world/level/saveddata/maps/MapItemSavedData.java
 @@ -3,6 +3,7 @@ package net.minecraft.world.level.saveddata.maps;
@@ -185,7 +185,7 @@ index f05ab5fdab4cb587974e2864e859e49375f8165e..9bd31436715f55f4af180ffac1585ddd
  import com.mojang.serialization.Codec;
  import com.mojang.serialization.codecs.RecordCodecBuilder;
  import io.netty.buffer.ByteBuf;
-@@ -39,8 +40,10 @@ import net.minecraft.world.level.LevelAccessor;
+@@ -38,8 +39,10 @@ import net.minecraft.world.level.LevelAccessor;
  import net.minecraft.world.level.saveddata.SavedData;
  import net.minecraft.world.level.saveddata.SavedDataType;
  import org.jspecify.annotations.Nullable;
@@ -196,7 +196,7 @@ index f05ab5fdab4cb587974e2864e859e49375f8165e..9bd31436715f55f4af180ffac1585ddd
      private static final int MAP_SIZE = 128;
      private static final int HALF_MAP_SIZE = 64;
      public static final int MAX_SCALE = 4;
-@@ -76,6 +79,7 @@ public class MapItemSavedData extends SavedData {
+@@ -75,6 +78,7 @@ public class MapItemSavedData extends SavedData {
      public final Map<String, MapDecoration> decorations = Maps.newLinkedHashMap();
      private final Map<String, MapFrame> frameMarkers = Maps.newHashMap();
      private int trackedDecorationCount;
@@ -204,7 +204,7 @@ index f05ab5fdab4cb587974e2864e859e49375f8165e..9bd31436715f55f4af180ffac1585ddd
  
      // CraftBukkit start
      public final org.bukkit.craftbukkit.map.CraftMapView mapView;
-@@ -304,6 +308,22 @@ public class MapItemSavedData extends SavedData {
+@@ -300,6 +304,22 @@ public class MapItemSavedData extends SavedData {
          final double yRot,
          final @Nullable Component name
      ) {

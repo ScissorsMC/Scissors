@@ -126,7 +126,7 @@ index 5b7ed8e5067683143c99473a126e17baa531903c..b92ab44b3a2682a8f9479302fbbb3f83
                                            final int maxCount) {
              if (this.count == 0) {
 diff --git a/ca/spottedleaf/moonrise/patches/chunk_system/level/entity/EntityLookup.java b/ca/spottedleaf/moonrise/patches/chunk_system/level/entity/EntityLookup.java
-index 328784ba08236553e49d62320b79f7222292412f..67ecdb17331018b2cbe65d0d7afc76141c656e9e 100644
+index 99b5026d8dfa9668caf15e9ae27619d9d433b441..489a50e0aa273ae0b0a1442df23a93b1c87e0412 100644
 --- a/ca/spottedleaf/moonrise/patches/chunk_system/level/entity/EntityLookup.java
 +++ b/ca/spottedleaf/moonrise/patches/chunk_system/level/entity/EntityLookup.java
 @@ -12,6 +12,7 @@ import net.minecraft.util.AbortableIterationConsumer;
@@ -164,7 +164,7 @@ index 328784ba08236553e49d62320b79f7222292412f..67ecdb17331018b2cbe65d0d7afc7614
 +            return false;
 +        }
 +
-         Entity currentlyMapped = this.entityById.putIfAbsent((long)entity.getId(), entity);
+         Entity currentlyMapped = this.entityById.putIfAbsent(entity.getId(), entity);
          if (currentlyMapped != null) {
              LOGGER.warn("Entity id already exists: " + entity.getId() + ", mapped to " + currentlyMapped + ", can't add " + entity);
 @@ -728,6 +745,31 @@ public abstract class EntityLookup implements LevelEntityGetter<Entity> {
@@ -200,7 +200,7 @@ index 328784ba08236553e49d62320b79f7222292412f..67ecdb17331018b2cbe65d0d7afc7614
                              final int maxCount) {
          final int minChunkX = (Mth.floor(box.minX) - 2) >> 4;
 diff --git a/ca/spottedleaf/moonrise/patches/collisions/CollisionUtil.java b/ca/spottedleaf/moonrise/patches/collisions/CollisionUtil.java
-index 54b2492c3ab6bf9ff52cec53dc4635f725f9eb4f..935086b2a3914c9c7239acb2719d588c3bb2f032 100644
+index 11d4f2d5caba52b492b8e130faa4701f3980b0f1..3506f5058a35b8ed561f4f86dcc390a69fab7881 100644
 --- a/ca/spottedleaf/moonrise/patches/collisions/CollisionUtil.java
 +++ b/ca/spottedleaf/moonrise/patches/collisions/CollisionUtil.java
 @@ -2088,7 +2088,9 @@ public final class CollisionUtil {
@@ -215,10 +215,10 @@ index 54b2492c3ab6bf9ff52cec53dc4635f725f9eb4f..935086b2a3914c9c7239acb2719d588c
          } else {
              entities = ((ChunkSystemEntityGetter)world).moonrise$getHardCollidingEntities(entity, aabb, predicate);
 diff --git a/net/minecraft/server/level/ServerLevel.java b/net/minecraft/server/level/ServerLevel.java
-index 467f44f04ed8d6a385ae4b0179525eadba67959f..aaf9739307ed079541b6700d92926d4082080617 100644
+index 807799f827bf08f01a3e9389fca595dd1c90fa92..1dfd1d074ed7a5c7e7fb86f2b303c73e524c6ead 100644
 --- a/net/minecraft/server/level/ServerLevel.java
 +++ b/net/minecraft/server/level/ServerLevel.java
-@@ -1664,7 +1664,7 @@ public class ServerLevel extends Level implements WorldGenLevel, ServerEntityGet
+@@ -1668,7 +1668,7 @@ public class ServerLevel extends Level implements WorldGenLevel, ServerEntityGet
              }
              // CraftBukkit end
  
@@ -383,10 +383,10 @@ index 96b0fa2ebab15a939a5162d23b3ad9b92365d818..08415eff1b4e54d3874106bfeccb0708
          this.destroy(level, this.getDropItem());
      }
 diff --git a/net/minecraft/world/entity/vehicle/boat/AbstractBoat.java b/net/minecraft/world/entity/vehicle/boat/AbstractBoat.java
-index 3fcd534cee1f605a710ffc43eff4b5106c7dd40c..42625241c06e0713f634e99e7791e15e2e0cf8fe 100644
+index 6c9ec44a46b6f40a2b8b008cc50c0cafe5e909e6..9dc7ea63decda73cff366a6de5a681e47e69239a 100644
 --- a/net/minecraft/world/entity/vehicle/boat/AbstractBoat.java
 +++ b/net/minecraft/world/entity/vehicle/boat/AbstractBoat.java
-@@ -320,7 +320,7 @@ public abstract class AbstractBoat extends VehicleEntity implements Leashable {
+@@ -322,7 +322,7 @@ public abstract class AbstractBoat extends VehicleEntity implements Leashable {
              }
          }
  
@@ -396,7 +396,7 @@ index 3fcd534cee1f605a710ffc43eff4b5106c7dd40c..42625241c06e0713f634e99e7791e15e
              boolean addNewPassengers = !this.level().isClientSide() && !(this.getControllingPassenger() instanceof Player);
  
 diff --git a/net/minecraft/world/entity/vehicle/minecart/AbstractMinecart.java b/net/minecraft/world/entity/vehicle/minecart/AbstractMinecart.java
-index 30b99d9d0944399e6f3a74c4310cbf8f15cc5adc..d462b784ee38a6187a8da7407f047ca5d2b08e0d 100644
+index db16f4802235646d3e20eebf417951391f3193e8..a58f66a2336a9dec5dbc84b27e942b8ff04097e0 100644
 --- a/net/minecraft/world/entity/vehicle/minecart/AbstractMinecart.java
 +++ b/net/minecraft/world/entity/vehicle/minecart/AbstractMinecart.java
 @@ -4,8 +4,10 @@ import com.google.common.collect.ImmutableList;
@@ -410,7 +410,7 @@ index 30b99d9d0944399e6f3a74c4310cbf8f15cc5adc..d462b784ee38a6187a8da7407f047ca5
  import net.minecraft.core.BlockPos;
  import net.minecraft.core.Direction;
  import net.minecraft.core.Vec3i;
-@@ -158,6 +160,12 @@ public abstract class AbstractMinecart extends VehicleEntity {
+@@ -159,6 +161,12 @@ public abstract class AbstractMinecart extends VehicleEntity {
          return this.behavior;
      }
  
@@ -455,10 +455,10 @@ index eacf2358d0eeb9a4b07181bb01e78e781c2d069d..70ebeb51a1518e0206f21109ff066ec5
                      // CraftBukkit start
                      org.bukkit.event.vehicle.VehicleEntityCollisionEvent collisionEvent = new org.bukkit.event.vehicle.VehicleEntityCollisionEvent(
 diff --git a/net/minecraft/world/entity/vehicle/minecart/OldMinecartBehavior.java b/net/minecraft/world/entity/vehicle/minecart/OldMinecartBehavior.java
-index 3c8694e75cabd68690d9139ecedc9e079db482c5..3707cf1bfd5332c8eb74245492d55117e81f9585 100644
+index eece08119c52628d0918d90b595276210062b5ed..9cce40c0d3f20cc519b8152646216b4e32c5de2c 100644
 --- a/net/minecraft/world/entity/vehicle/minecart/OldMinecartBehavior.java
 +++ b/net/minecraft/world/entity/vehicle/minecart/OldMinecartBehavior.java
-@@ -367,7 +367,7 @@ public class OldMinecartBehavior extends MinecartBehavior {
+@@ -359,7 +359,7 @@ public class OldMinecartBehavior extends MinecartBehavior {
      public boolean pushAndPickupEntities() {
          AABB hitbox = this.minecart.getBoundingBox().inflate(0.2F, 0.0, 0.2F);
          if (this.minecart.isRideable() && this.getDeltaMovement().horizontalDistanceSqr() >= 0.01) {
@@ -467,7 +467,7 @@ index 3c8694e75cabd68690d9139ecedc9e079db482c5..3707cf1bfd5332c8eb74245492d55117
              if (!entities.isEmpty()) {
                  for (Entity entity : entities) {
                      if (!(entity instanceof Player)
-@@ -396,7 +396,7 @@ public class OldMinecartBehavior extends MinecartBehavior {
+@@ -388,7 +388,7 @@ public class OldMinecartBehavior extends MinecartBehavior {
                  }
              }
          } else {

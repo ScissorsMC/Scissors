@@ -9,7 +9,7 @@
  import java.util.function.BiConsumer;
  import java.util.function.BiFunction;
  import java.util.function.Consumer;
-@@ -115,7 +_,16 @@
+@@ -116,7 +_,16 @@
                      ExtraCodecs.optionalAlwaysPresentFieldOf(ExtraCodecs.intRange(1, 99), "count", 1).forGetter(ItemStack::getCount),
                      DataComponentPatch.CODEC.optionalFieldOf("components", DataComponentPatch.EMPTY).forGetter(s -> s.components.asPatch())
                  )
@@ -27,7 +27,7 @@
          )
      );
      public static final Codec<ItemStack> CODEC = Codec.lazyInitialized(MAP_CODEC::codec);
-@@ -149,6 +_,7 @@
+@@ -150,6 +_,7 @@
          ByteBufCodecs.collection(NonNullList::createWithCapacity)
      );
      private static final Logger LOGGER = LogUtils.getLogger();
@@ -35,7 +35,7 @@
      public static final ItemStack EMPTY = new ItemStack((Void)null);
      private static final Component DISABLED_ITEM_TOOLTIP = Component.translatable("item.disabled").withStyle(ChatFormatting.RED);
      private int count;
-@@ -195,7 +_,7 @@
+@@ -196,7 +_,7 @@
                      boolean prev = net.minecraft.network.chat.ComponentSerialization.DONT_RENDER_TRANSLATABLES.get();
                      try (final io.papermc.paper.util.SafeAutoClosable ignored = io.papermc.paper.util.sanitizer.ItemObfuscationSession.withContext(c -> c.itemStack(itemStack))) { // pass the itemstack as context to the obfuscation session
                          net.minecraft.network.chat.ComponentSerialization.DONT_RENDER_TRANSLATABLES.set(true);
@@ -44,7 +44,7 @@
                      } finally {
                          net.minecraft.network.chat.ComponentSerialization.DONT_RENDER_TRANSLATABLES.set(prev);
                      }
-@@ -281,14 +_,14 @@
+@@ -282,14 +_,14 @@
          this.components = new PatchedDataComponentMap(DataComponentMap.EMPTY);
      }
  
@@ -62,7 +62,7 @@
              if (validationContents.isError()) {
                  return validationContents;
              }
-@@ -296,7 +_,7 @@
+@@ -297,7 +_,7 @@
  
          BundleContents bundle = components.get(DataComponents.BUNDLE_CONTENTS);
          if (bundle != null) {
@@ -71,7 +71,7 @@
              if (validationResult.isError()) {
                  return validationResult;
              }
-@@ -309,7 +_,7 @@
+@@ -310,7 +_,7 @@
  
          ChargedProjectiles chargedProjectiles = components.get(DataComponents.CHARGED_PROJECTILES);
          if (chargedProjectiles != null) {
@@ -80,7 +80,7 @@
              if (validationResult.isError()) {
                  return validationResult;
              }
-@@ -318,8 +_,13 @@
+@@ -319,8 +_,13 @@
          return DataResult.success(Unit.INSTANCE);
      }
  
@@ -95,7 +95,7 @@
              int itemCount = item.count();
              int maxStackSize = item.getMaxStackSize();
              if (itemCount > maxStackSize) {
-@@ -329,6 +_,248 @@
+@@ -330,6 +_,248 @@
  
          return DataResult.success(Unit.INSTANCE);
      }

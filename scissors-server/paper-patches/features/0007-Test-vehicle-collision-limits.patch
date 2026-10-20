@@ -6,10 +6,10 @@ Subject: [PATCH] Test vehicle collision limits
 
 diff --git a/src/test/java/io/papermc/paper/scissors/MinecartPopulationLimitTest.java b/src/test/java/io/papermc/paper/scissors/MinecartPopulationLimitTest.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..0f9f5f3c543468ee3366e0825934c7ea52dc440e
+index 0000000000000000000000000000000000000000..600932cf6f9065f37b463fad377b6c69b1d4501e
 --- /dev/null
 +++ b/src/test/java/io/papermc/paper/scissors/MinecartPopulationLimitTest.java
-@@ -0,0 +1,281 @@
+@@ -0,0 +1,309 @@
 +package io.papermc.paper.scissors;
 +
 +import ca.spottedleaf.moonrise.patches.chunk_system.level.entity.ChunkEntitySlices;
@@ -74,6 +74,33 @@ index 0000000000000000000000000000000000000000..0f9f5f3c543468ee3366e0825934c7ea
 +        assertEquals(100, fixture.tracked.size());
 +        assertEquals(100, fixture.lookup.getEntityCount());
 +        assertTrue(fixture.tracked.stream().noneMatch(Entity::isRemoved));
++    }
++
++    @Test
++    void rejectedDuplicateUuidDoesNotChangeTheCount() throws ReflectiveOperationException {
++        final Fixture fixture = new Fixture();
++        final Minecart original = fixture.fill(0, 0, 1).getFirst();
++        final Minecart duplicate = fixture.cart(8, 8, 8);
++        duplicate.setUUID(original.getUUID());
++        assertFalse(fixture.lookup.addNewEntity(duplicate));
++        assertEquals(1, fixture.count(0, 0));
++        assertSame(original, fixture.lookup.get(original.getUUID()));
++        assertFalse(duplicate.isRemoved());
++    }
++
++    @Test
++    void trackingCallbackCannotAdmitAnExtraCart() throws ReflectiveOperationException {
++        final Fixture fixture = new Fixture();
++        fixture.fill(0, 0, 99);
++        final Minecart extra = fixture.cart(8, 8, 8);
++        doAnswer(invocation -> {
++            assertEquals(100, fixture.count(0, 0));
++            assertFalse(fixture.lookup.addNewEntity(extra));
++            return null;
++        }).when(fixture.callback).onTrackingStart(any());
++        assertTrue(fixture.lookup.addNewEntity(fixture.cart(8, 8, 8)));
++        assertEquals(100, fixture.count(0, 0));
++        assertFalse(extra.isRemoved());
 +    }
 +
 +    @ParameterizedTest
@@ -218,6 +245,7 @@ index 0000000000000000000000000000000000000000..0f9f5f3c543468ee3366e0825934c7ea
 +    private static final class Fixture {
 +        final ServerLevel level = mock(ServerLevel.class);
 +        final TestLookup lookup;
++        final LevelCallback<Entity> callback;
 +        final List<Entity> tracked = new ArrayList<>();
 +
 +        @SuppressWarnings("unchecked")
@@ -237,7 +265,7 @@ index 0000000000000000000000000000000000000000..0f9f5f3c543468ee3366e0825934c7ea
 +            when(this.level.getMaxSectionY()).thenReturn(19);
 +            final AtomicInteger ids = new AtomicInteger();
 +            when(this.level.getNextEntityId()).thenAnswer(invocation -> ids.incrementAndGet());
-+            final LevelCallback<Entity> callback = mock(LevelCallback.class);
++            this.callback = mock(LevelCallback.class);
 +            this.lookup = new TestLookup(this.level, callback);
 +            when(this.level.moonrise$getEntityLookup()).thenReturn(this.lookup);
 +            doAnswer(invocation -> {
@@ -293,10 +321,10 @@ index 0000000000000000000000000000000000000000..0f9f5f3c543468ee3366e0825934c7ea
 +}
 diff --git a/src/test/java/io/papermc/paper/scissors/VehicleCollisionLimitTest.java b/src/test/java/io/papermc/paper/scissors/VehicleCollisionLimitTest.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..60182210ea83d690d0fc3a2f74bb32c59aa049bb
+index 0000000000000000000000000000000000000000..77033fdbe9ed1b766ac3875f7934f819ac1292ff
 --- /dev/null
 +++ b/src/test/java/io/papermc/paper/scissors/VehicleCollisionLimitTest.java
-@@ -0,0 +1,369 @@
+@@ -0,0 +1,381 @@
 +package io.papermc.paper.scissors;
 +
 +import ca.spottedleaf.moonrise.patches.chunk_system.level.entity.ChunkEntitySlices;
@@ -520,6 +548,18 @@ index 0000000000000000000000000000000000000000..60182210ea83d690d0fc3a2f74bb32c5
 +        final CountingMinecart cart = fixture.cart(8, 8, 8);
 +        assertTrue(cart.getHardCollisionEntities(new AABB(-100_000, 0, -100_000, 100_000, 10, 100_000), null).isEmpty());
 +        verify(fixture.lookup, times(256)).getChunk(anyInt(), anyInt());
++    }
++
++    @Test
++    void skipsInaccessibleChunks() throws ReflectiveOperationException {
++        final Fixture fixture = new Fixture(8);
++        final CountingMinecart cart = fixture.pile(3).getFirst();
++        fixture.chunk(0, 0).status = FullChunkStatus.INACCESSIBLE;
++        doCallRealMethod().when(fixture.level).getEntityCollisions(any(), any());
++        assertTrue(fixture.level.getEntityCollisions(cart, cart.getBoundingBox()).isEmpty());
++        assertEquals(0, cart.collisionChecks);
++        fixture.chunk(0, 0).status = FullChunkStatus.ENTITY_TICKING;
++        assertEquals(2, fixture.level.getEntityCollisions(cart, cart.getBoundingBox()).size());
 +    }
 +
 +    @Test
