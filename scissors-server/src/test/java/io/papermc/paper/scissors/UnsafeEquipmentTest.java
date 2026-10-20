@@ -1,398 +1,396 @@
 package io.papermc.paper.scissors;
 
-import java.io.DataInputStream;
+import com.mojang.authlib.GameProfile;
+import io.netty.buffer.ByteBuf;
+import io.netty.buffer.Unpooled;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.UUID;
 import net.minecraft.core.component.DataComponents;
 import net.minecraft.nbt.CompoundTag;
-import net.minecraft.nbt.NbtIo;
+import net.minecraft.nbt.ListTag;
 import net.minecraft.nbt.NbtOps;
+import net.minecraft.nbt.Tag;
 import net.minecraft.network.RegistryFriendlyByteBuf;
-import net.minecraft.network.protocol.game.ClientboundUpdateAttributesPacket;
+import net.minecraft.network.protocol.game.ServerboundSetCreativeModeSlotPacket;
 import net.minecraft.resources.Identifier;
 import net.minecraft.resources.RegistryOps;
+import net.minecraft.server.MinecraftServer;
+import net.minecraft.server.level.ServerChunkCache;
+import net.minecraft.server.level.ServerLevel;
+import net.minecraft.util.ProblemReporter;
+import net.minecraft.world.ItemStackWithSlot;
 import net.minecraft.world.entity.EntityTypes;
 import net.minecraft.world.entity.EquipmentSlot;
 import net.minecraft.world.entity.EquipmentSlotGroup;
 import net.minecraft.world.entity.ai.attributes.AttributeInstance;
 import net.minecraft.world.entity.ai.attributes.AttributeModifier;
 import net.minecraft.world.entity.ai.attributes.Attributes;
+import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.flag.FeatureFlags;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.ItemStackTemplate;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.item.component.BundleContents;
 import net.minecraft.world.item.component.ItemAttributeModifiers;
 import net.minecraft.world.item.equipment.Equippable;
+import net.minecraft.world.level.GameType;
+import net.minecraft.world.level.Level;
+import net.minecraft.world.level.storage.TagValueInput;
+import net.minecraft.world.level.storage.TagValueOutput;
+import org.bukkit.Bukkit;
+import org.bukkit.craftbukkit.CraftRegistry;
+import org.bukkit.craftbukkit.entity.CraftHumanEntity;
+import org.bukkit.craftbukkit.entity.CraftLivingEntity;
+import org.bukkit.plugin.PluginManager;
+import org.bukkit.support.DummyServerHelper;
 import org.bukkit.support.RegistryHelper;
-import org.bukkit.support.environment.AllFeatures;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
-import static org.junit.jupiter.api.Assertions.*;
+import org.spigotmc.SpigotWorldConfig;
 
-@AllFeatures
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.mockStatic;
+import static org.mockito.Mockito.when;
+
 class UnsafeEquipmentTest {
-    private static final class TestPlayer extends net.minecraft.world.entity.player.Player {
-        private org.bukkit.craftbukkit.entity.CraftHumanEntity bukkit;
-        TestPlayer(net.minecraft.world.level.Level level) {
-            super(level, new com.mojang.authlib.GameProfile(java.util.UUID.randomUUID(), "EquipmentRegression"));
-            this.setId(1);
+    private static final double BASE_SPEED = 0.1;
+    private static final Identifier REPORTED_SPEED = Identifier.withDefaultNamespace("b0b03ff6-3517-4042-8865-88837e21efc1");
+    // A finite amount that stands out in the encoded bytes. Component constructors drop non-finite amounts,
+    // so the test writes this marker and replaces it with NaN on the wire, as a modified client would.
+    private static final double WIRE_MARKER = 1234.5;
+
+    @BeforeAll
+    static void initializePacketSanitizer() throws ClassNotFoundException {
+        RegistryHelper.setup(FeatureFlags.REGISTRY.allFlags());
+        // Supply real registries for Paper's static obfuscation setup without starting a server.
+        final MinecraftServer server = mock(MinecraftServer.class);
+        when(server.registryAccess()).thenReturn(RegistryHelper.registryAccess().freeze());
+        try (var access = mockStatic(MinecraftServer.class)) {
+            access.when(MinecraftServer::getServer).thenReturn(server);
+            Class.forName("io.papermc.paper.util.sanitizer.ItemComponentSanitizer");
         }
-        @Override public net.minecraft.world.level.GameType gameMode() { return net.minecraft.world.level.GameType.SURVIVAL; }
-        @Override public org.bukkit.craftbukkit.entity.CraftHumanEntity getBukkitEntity() {
-            if (this.bukkit == null) this.bukkit = org.mockito.Mockito.mock(org.bukkit.craftbukkit.entity.CraftHumanEntity.class);
-            return this.bukkit;
-        }
-        @Override public org.bukkit.craftbukkit.entity.CraftLivingEntity getBukkitLivingEntity() { return this.getBukkitEntity(); }
-        void loadTag(CompoundTag tag) {
-            this.readAdditionalSaveData(net.minecraft.world.level.storage.TagValueInput.create(
-                net.minecraft.util.ProblemReporter.DISCARDING, RegistryHelper.registryAccess(), tag));
-        }
-        CompoundTag saveTag() {
-            var output = net.minecraft.world.level.storage.TagValueOutput.createWithContext(net.minecraft.util.ProblemReporter.DISCARDING, RegistryHelper.registryAccess());
-            this.addAdditionalSaveData(output);
-            return output.buildResult();
+        Bukkit.setServer(DummyServerHelper.setup());
+        when(Bukkit.getServer().getPluginManager()).thenReturn(mock(PluginManager.class));
+        CraftRegistry.setMinecraftRegistry(RegistryHelper.registryAccess());
+    }
+
+    @Test
+    void storedItemLosesNonFiniteModifiersAndCustomOverlay() {
+        assertReportedItemSanitized(parse(reportedItem()));
+    }
+
+    @Test
+    void storedItemInsideAContainerIsSanitized() {
+        final CompoundTag slot = new CompoundTag();
+        slot.putInt("slot", 0);
+        slot.put("item", reportedItem());
+        final ListTag slots = new ListTag();
+        slots.add(slot);
+        final CompoundTag box = item("minecraft:shulker_box", 1);
+        box.getCompoundOrEmpty("components").put("minecraft:container", slots);
+
+        final ItemStack contained = parse(box).get(DataComponents.CONTAINER).nonEmptyItemCopyStream().findFirst().orElseThrow();
+        assertReportedItemSanitized(contained);
+    }
+
+    @Test
+    void vanillaEquipmentAndFiniteModifiersReachClientsUnchanged() {
+        final ItemStack finite = new ItemStack(Items.STONE);
+        finite.set(DataComponents.ATTRIBUTE_MODIFIERS, speedModifier(Identifier.withDefaultNamespace("finite"), 0.5, EquipmentSlotGroup.MAINHAND));
+        for (final ItemStack item : List.of(new ItemStack(Items.CARVED_PUMPKIN), new ItemStack(Items.DIAMOND_HELMET),
+            new ItemStack(Items.DIAMOND_HORSE_ARMOR), new ItemStack(Items.SADDLE), finite)) {
+            assertTrue(ItemStack.matches(item, sendToClient(item)), item.toString());
         }
     }
 
     @Test
-    void trackedEquipmentKeepsItsSafeEffectsAfterRepair() throws Exception {
-        var level = org.mockito.Mockito.mock(net.minecraft.server.level.ServerLevel.class);
-        var config = net.minecraft.world.level.Level.class.getDeclaredField("spigotConfig");
-        config.setAccessible(true);
-        config.set(level, org.mockito.Mockito.mock(org.spigotmc.SpigotWorldConfig.class));
-        org.mockito.Mockito.when(level.registryAccess()).thenReturn(RegistryHelper.registryAccess());
-        org.mockito.Mockito.when(level.enabledFeatures()).thenReturn(net.minecraft.world.flag.FeatureFlags.VANILLA_SET);
-        org.mockito.Mockito.when(level.getChunkSource()).thenReturn(org.mockito.Mockito.mock(net.minecraft.server.level.ServerChunkCache.class));
-        org.mockito.Mockito.when(org.bukkit.Bukkit.getServer().getPluginManager()).thenReturn(org.mockito.Mockito.mock(org.bukkit.plugin.PluginManager.class));
-        TestPlayer player = new TestPlayer(level);
-        ItemStack original = new ItemStack(Items.STICK);
-        var id = Identifier.withDefaultNamespace("safe_equipment");
-        original.set(DataComponents.ATTRIBUTE_MODIFIERS, ItemAttributeModifiers.builder().add(Attributes.MOVEMENT_SPEED,
-            new AttributeModifier(id, 0.5, AttributeModifier.Operation.ADD_VALUE), EquipmentSlotGroup.MAINHAND).build());
-        player.getInventory().setSelectedItem(original);
-        player.detectEquipmentUpdates();
-        double expected = player.getAttribute(Attributes.MOVEMENT_SPEED).getValue();
-        assertEquals(0.6, expected, 1.0e-6);
-        ItemStack poisoned = original.copy();
-        poisoned.set(DataComponents.ATTRIBUTE_MODIFIERS, original.get(DataComponents.ATTRIBUTE_MODIFIERS).withModifierAdded(Attributes.MOVEMENT_SPEED,
-            new AttributeModifier(Identifier.withDefaultNamespace("unsafe_extra"), Double.NaN, AttributeModifier.Operation.ADD_VALUE), EquipmentSlotGroup.MAINHAND));
-        player.getInventory().setSelectedItem(poisoned);
-        player.detectEquipmentUpdates();
-        assertEquals(expected, player.getAttribute(Attributes.MOVEMENT_SPEED).getValue(), 1.0e-9);
-        ItemStack hidden = new ItemStack(Items.STONE);
-        hidden.set(DataComponents.ATTRIBUTE_MODIFIERS, ItemAttributeModifiers.builder().add(Attributes.MOVEMENT_SPEED,
-            new AttributeModifier(id, 2, AttributeModifier.Operation.ADD_VALUE), EquipmentSlotGroup.BODY).build());
-        player.getInventory().equipment.set(EquipmentSlot.BODY, hidden);
-        player.detectEquipmentUpdates();
-        assertEquals(expected, player.getAttribute(Attributes.MOVEMENT_SPEED).getValue(), 1.0e-9);
-        player.getInventory().setSelectedItem(ItemStack.EMPTY);
-        player.detectEquipmentUpdates();
-        assertEquals(0.1, player.getAttribute(Attributes.MOVEMENT_SPEED).getValue(), 1.0e-6);
+    void creativePacketWithNonFiniteModifierIsSanitizedAndCorrected() {
+        final ItemStack stone = new ItemStack(Items.STONE);
+        stone.set(DataComponents.ATTRIBUTE_MODIFIERS, speedModifier(Identifier.withDefaultNamespace("unsafe"), WIRE_MARKER, EquipmentSlotGroup.ANY));
+        final ItemStack bundle = new ItemStack(Items.BUNDLE);
+        bundle.set(DataComponents.BUNDLE_CONTENTS, new BundleContents(List.of(ItemStackTemplate.fromNonEmptyStack(stone))));
 
-        // Reload an already tracked player, as CraftPlayer.loadData does.
-        player.getInventory().setSelectedItem(original);
-        player.detectEquipmentUpdates();
-        ItemStack replacement = new ItemStack(Items.STICK);
-        replacement.set(DataComponents.ATTRIBUTE_MODIFIERS, ItemAttributeModifiers.builder().add(Attributes.MOVEMENT_SPEED,
-            new AttributeModifier(Identifier.withDefaultNamespace("replacement"), 0.25, AttributeModifier.Operation.ADD_VALUE), EquipmentSlotGroup.MAINHAND).build());
-        CompoundTag saved = new CompoundTag();
-        saved.put("Inventory", net.minecraft.world.ItemStackWithSlot.CODEC.listOf().encodeStart(ops(),
-            List.of(new net.minecraft.world.ItemStackWithSlot(0, replacement))).getOrThrow());
-        CompoundTag equipment = new CompoundTag();
-        equipment.put("body", reportedTag());
-        saved.put("equipment", equipment);
-        player.loadTag(saved);
-        player.detectEquipmentUpdates();
-        assertEquals(0.35, player.getAttribute(Attributes.MOVEMENT_SPEED).getValue(), 1.0e-6);
-        assertFalse(player.getAttribute(Attributes.MOVEMENT_SPEED).hasModifier(id));
+        final ItemStack decodedStone = decodeCreativeSlotWithNaN(stone);
+        assertTrue(decodedStone.get(DataComponents.ATTRIBUTE_MODIFIERS).modifiers().isEmpty());
+        assertTrue(decodedStone.wereComponentsSanitizedDuringDecode());
 
-        ItemStack boots = new ItemStack(Items.DIAMOND_BOOTS);
-        var enchantment = RegistryHelper.registryAccess().lookupOrThrow(net.minecraft.core.registries.Registries.ENCHANTMENT)
-            .getOrThrow(net.minecraft.world.item.enchantment.Enchantments.UNBREAKING);
-        boots.enchant(enchantment, 1);
-        player.getInventory().equipment.set(EquipmentSlot.FEET, boots);
-        player.detectEquipmentUpdates();
-        var attributeEffect = new net.minecraft.world.item.enchantment.effects.EnchantmentAttributeEffect(
-            Identifier.withDefaultNamespace("recovery_effect"), Attributes.MOVEMENT_SPEED,
-            net.minecraft.world.item.enchantment.LevelBasedValue.constant(0.4F), AttributeModifier.Operation.ADD_VALUE);
-        var otherEffect = org.mockito.Mockito.mock(net.minecraft.world.item.enchantment.effects.EnchantmentLocationBasedEffect.class);
-        var group = net.minecraft.world.item.enchantment.effects.AllOf.locationBasedEffects(attributeEffect, otherEffect);
-        player.activeLocationDependentEnchantments(EquipmentSlot.FEET).put(enchantment.value(), java.util.Set.of(group));
-        player.getAttribute(Attributes.MOVEMENT_SPEED).addOrUpdateTransientModifier(attributeEffect.getModifier(1, EquipmentSlot.FEET));
-        ItemStack collision = new ItemStack(Items.IRON_INGOT);
-        collision.set(DataComponents.ATTRIBUTE_MODIFIERS, ItemAttributeModifiers.builder().add(Attributes.MOVEMENT_SPEED,
-            attributeEffect.getModifier(1, EquipmentSlot.FEET), EquipmentSlotGroup.BODY).build());
-        saved = player.saveTag();
-        equipment = saved.getCompoundOrEmpty("equipment");
-        equipment.put("body", ItemStack.CODEC.encodeStart(ops(), collision).getOrThrow());
-        saved.put("equipment", equipment);
-        player.loadTag(saved);
-        player.detectEquipmentUpdates();
-        assertEquals(0.75, player.getAttribute(Attributes.MOVEMENT_SPEED).getValue(), 1.0e-6);
-        org.mockito.Mockito.verifyNoInteractions(otherEffect);
-        for (int attempt = 0; attempt < 1000; attempt++) player.getInventory().equipment.set(EquipmentSlot.BODY, hidden);
-        assertTrue(player.getItemBySlot(EquipmentSlot.BODY).isEmpty());
-        assertTrue(player.saveTag().getListOrEmpty("ScissorsRecoveredEquipment").isEmpty());
+        final ItemStack decodedBundle = decodeCreativeSlotWithNaN(bundle);
+        final ItemStack nested = decodedBundle.get(DataComponents.BUNDLE_CONTENTS).items().getFirst().create();
+        assertTrue(nested.get(DataComponents.ATTRIBUTE_MODIFIERS).modifiers().isEmpty());
+        assertTrue(decodedBundle.wereComponentsSanitizedDuringDecode(), "Nested sanitation must still correct the client");
     }
 
     @Test
-    void fullInventoryRecoverySurvivesASaveAndReturnsItemsWhenSpaceIsAvailable() throws Exception {
-        var level = org.mockito.Mockito.mock(net.minecraft.server.level.ServerLevel.class);
-        var config = net.minecraft.world.level.Level.class.getDeclaredField("spigotConfig");
-        config.setAccessible(true);
-        config.set(level, org.mockito.Mockito.mock(org.spigotmc.SpigotWorldConfig.class));
-        org.mockito.Mockito.when(level.registryAccess()).thenReturn(RegistryHelper.registryAccess());
-        org.mockito.Mockito.when(level.enabledFeatures()).thenReturn(net.minecraft.world.flag.FeatureFlags.VANILLA_SET);
-        TestPlayer player = new TestPlayer(level);
-        CompoundTag saved = new CompoundTag();
-        CompoundTag equipment = new CompoundTag();
-        equipment.put("body", reportedTag());
-        saved.put("equipment", equipment);
-        var inventory = new java.util.ArrayList<net.minecraft.world.ItemStackWithSlot>();
-        for (int slot = 0; slot < 36; slot++) inventory.add(new net.minecraft.world.ItemStackWithSlot(slot, new ItemStack(Items.STONE, 64)));
-        saved.put("Inventory", net.minecraft.world.ItemStackWithSlot.CODEC.listOf().encodeStart(ops(), inventory).getOrThrow());
-        player.loadTag(saved);
-        assertTrue(player.getItemBySlot(EquipmentSlot.BODY).isEmpty());
-        CompoundTag persisted = player.saveTag();
-        assertEquals(1, persisted.getListOrEmpty("ScissorsRecoveredEquipment").size());
-        player.getInventory().setItem(0, ItemStack.EMPTY);
-        persisted = player.saveTag();
-        TestPlayer restored = new TestPlayer(level);
-        restored.loadTag(persisted);
-        assertReportedItemSafe(restored.getInventory().getItem(0));
-        assertTrue(restored.saveTag().getListOrEmpty("ScissorsRecoveredEquipment").isEmpty());
-        for (int slot = 1; slot < 36; slot++) assertEquals(64, restored.getInventory().getItem(slot).getCount());
-    }
+    void attributesDiscardNonFiniteValues() {
+        for (final double amount : new double[] {Double.NaN, Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY}) {
+            for (final AttributeModifier.Operation operation : AttributeModifier.Operation.values()) {
+                final AttributeModifier modifier = new AttributeModifier(Identifier.withDefaultNamespace("unsafe"), amount, operation);
+                final AttributeInstance added = speedAttribute();
+                added.addPermanentModifier(modifier);
+                added.addOrUpdateTransientModifier(modifier);
+                assertTrue(added.getModifiers().isEmpty());
+                assertEquals(BASE_SPEED, added.getValue());
 
-    @Test
-    void ordinaryVanillaEquipmentAndFiniteCustomAttributesSurvive() {
-        for (var item : List.of(Items.CARVED_PUMPKIN, Items.DIAMOND_HELMET, Items.DIAMOND_HORSE_ARMOR, Items.SADDLE)) {
-            ItemStack original = new ItemStack(item);
-            assertTrue(ItemStack.matches(original, wireRoundTrip(original)));
+                final AttributeInstance loaded = speedAttribute();
+                loaded.apply(new AttributeInstance.Packed(Attributes.MOVEMENT_SPEED, amount, List.of(modifier)));
+                assertTrue(loaded.getModifiers().isEmpty());
+                assertTrue(Double.isFinite(loaded.getValue()));
+            }
         }
-        ItemStack original = new ItemStack(Items.STONE);
-        original.set(DataComponents.ATTRIBUTE_MODIFIERS, ItemAttributeModifiers.builder().add(Attributes.MOVEMENT_SPEED,
-            new AttributeModifier(Identifier.withDefaultNamespace("finite"), 0.5, AttributeModifier.Operation.ADD_VALUE), EquipmentSlotGroup.MAINHAND).build());
-        assertTrue(ItemStack.matches(original, wireRoundTrip(original)));
     }
 
     @Test
-    void storedHiddenEquipmentIsAutomaticallyRecoveredWithoutResidualSpeed() throws Exception {
-        var level = org.mockito.Mockito.mock(net.minecraft.server.level.ServerLevel.class);
-        var config = net.minecraft.world.level.Level.class.getDeclaredField("spigotConfig");
-        config.setAccessible(true);
-        config.set(level, org.mockito.Mockito.mock(org.spigotmc.SpigotWorldConfig.class));
-        org.mockito.Mockito.when(level.registryAccess()).thenReturn(RegistryHelper.registryAccess());
-        org.mockito.Mockito.when(level.enabledFeatures()).thenReturn(net.minecraft.world.flag.FeatureFlags.VANILLA_SET);
-        TestPlayer player = new TestPlayer(level);
-        CompoundTag saved = new CompoundTag();
-        CompoundTag equipment = new CompoundTag();
-        equipment.put("body", reportedTag());
-        equipment.put("saddle", reportedTag());
-        saved.put("equipment", equipment);
-        var speed = player.getAttribute(Attributes.MOVEMENT_SPEED);
-        speed.addPermanentModifier(new AttributeModifier(Identifier.withDefaultNamespace("b0b03ff6-3517-4042-8865-88837e21efc1"), 0.5, AttributeModifier.Operation.ADD_VALUE));
-        saved.put("attributes", AttributeInstance.Packed.LIST_CODEC.encodeStart(ops(), List.of(speed.pack())).getOrThrow());
-        player.loadTag(saved);
+    void replacingAModifierWithAnotherOperationLeavesNothingBehind() {
+        final AttributeInstance speed = speedAttribute();
+        final Identifier id = Identifier.withDefaultNamespace("same_id");
+        speed.addOrUpdateTransientModifier(new AttributeModifier(id, 0.5, AttributeModifier.Operation.ADD_VALUE));
+        speed.addOrUpdateTransientModifier(new AttributeModifier(id, 2, AttributeModifier.Operation.ADD_MULTIPLIED_TOTAL));
+        speed.removeModifier(id);
+        assertEquals(BASE_SPEED, speed.getValue());
+    }
+
+    @Test
+    void playersCannotEquipAnimalSlots() {
+        final TestPlayer player = newPlayer();
+        player.setItemSlot(EquipmentSlot.BODY, new ItemStack(Items.DIAMOND_HORSE_ARMOR));
+        player.setItemSlot(EquipmentSlot.SADDLE, new ItemStack(Items.SADDLE));
         assertTrue(player.getItemBySlot(EquipmentSlot.BODY).isEmpty());
         assertTrue(player.getItemBySlot(EquipmentSlot.SADDLE).isEmpty());
         assertFalse(player.canUseSlot(EquipmentSlot.BODY));
         assertFalse(player.canUseSlot(EquipmentSlot.SADDLE));
-        assertEquals(0.1, speed.getValue(), 1.0e-6);
-        int recovered = 0;
+    }
+
+    @Test
+    void savedAnimalSlotEquipmentReturnsToInventoryWithoutItsEffects() {
+        final TestPlayer player = newPlayer();
+        final CompoundTag saved = savedPlayer(List.of());
+        saved.getCompoundOrEmpty("equipment").put("saddle", reportedItem());
+        // Affected players were saved with the hidden item's speed modifier as a permanent attribute.
+        final AttributeInstance speed = speedAttribute();
+        speed.addPermanentModifier(new AttributeModifier(REPORTED_SPEED, 0.5, AttributeModifier.Operation.ADD_VALUE));
+        saved.put("attributes", AttributeInstance.Packed.LIST_CODEC.encodeStart(ops(), List.of(speed.pack())).getOrThrow());
+
+        player.loadTag(saved);
+
+        assertTrue(player.getItemBySlot(EquipmentSlot.BODY).isEmpty());
+        assertTrue(player.getItemBySlot(EquipmentSlot.SADDLE).isEmpty());
+        assertEquals(BASE_SPEED, player.getAttribute(Attributes.MOVEMENT_SPEED).getValue(), 1.0e-6);
+        assertReportedItemSanitized(player.getInventory().getItem(0));
+        assertReportedItemSanitized(player.getInventory().getItem(1));
+    }
+
+    @Test
+    void recoveredEquipmentWaitsInTheSaveUntilTheInventoryHasSpace() {
+        final List<ItemStackWithSlot> fullInventory = new ArrayList<>();
         for (int slot = 0; slot < 36; slot++) {
-            ItemStack item = player.getInventory().getItem(slot);
-            if (!item.isEmpty()) {
-                assertReportedItemSafe(item);
-                recovered += item.getCount();
-            }
+            fullInventory.add(new ItemStackWithSlot(slot, new ItemStack(Items.STONE, 64)));
         }
-        assertEquals(128, recovered);
-    }
-    private static RegistryOps<net.minecraft.nbt.Tag> ops() {
-        return RegistryHelper.registryAccess().createSerializationContext(NbtOps.INSTANCE);
+        final TestPlayer player = newPlayer();
+        player.loadTag(savedPlayer(fullInventory));
+        assertTrue(player.getItemBySlot(EquipmentSlot.BODY).isEmpty());
+
+        player.getInventory().setItem(0, ItemStack.EMPTY);
+        final TestPlayer restored = newPlayer();
+        restored.loadTag(player.saveTag());
+
+        assertReportedItemSanitized(restored.getInventory().getItem(0));
+        assertTrue(restored.saveTag().getListOrEmpty("ScissorsRecoveredEquipment").isEmpty());
     }
 
-    private static CompoundTag reportedTag() throws Exception {
-        try (var input = new DataInputStream(UnsafeEquipmentTest.class.getResourceAsStream("/io/github/scissorsmc/unsafe-equipment.nbt"))) {
-            return NbtIo.read(input);
+    @Test
+    void repeatedReloadsReturnTheRecoveredItemOnlyOnce() {
+        // Creative players could equip one item from a held stack without consuming it.
+        CompoundTag saved = savedPlayer(List.of(new ItemStackWithSlot(0, parse(reportedItem()))));
+        saved.getCompoundOrEmpty("equipment").getCompoundOrEmpty("body").putInt("count", 1);
+        for (int reload = 0; reload < 3; reload++) {
+            final TestPlayer player = newPlayer();
+            player.loadTag(saved);
+            assertEquals(64, player.getInventory().getItem(0).getCount());
+            assertEquals(1, player.getInventory().getItem(1).getCount());
+            assertTrue(player.getInventory().getItem(2).isEmpty());
+            saved = player.saveTag();
         }
     }
 
-    private static ItemStack rawReportedItem() throws Exception {
-        CompoundTag components = reportedTag().getCompoundOrEmpty("components");
-        ItemStack item = new ItemStack(Items.IRON_INGOT, 64);
-        item.set(DataComponents.ATTRIBUTE_MODIFIERS, ItemAttributeModifiers.CODEC.parse(ops(), components.get("minecraft:attribute_modifiers")).getOrThrow());
-        item.set(DataComponents.EQUIPPABLE, Equippable.CODEC.parse(ops(), components.get("minecraft:equippable")).getOrThrow());
-        return item;
+    @Test
+    void recoveryKeepsTheEffectsOfRealEquipmentWithTheSameModifierId() {
+        final TestPlayer player = newPlayer();
+        final ItemStack held = new ItemStack(Items.STICK);
+        held.set(DataComponents.ATTRIBUTE_MODIFIERS, speedModifier(REPORTED_SPEED, 0.25, EquipmentSlotGroup.MAINHAND));
+        player.getInventory().setSelectedItem(held);
+        player.detectEquipmentUpdates();
+
+        // Reload the already tracked player, as CraftPlayer.loadData does.
+        player.loadTag(savedPlayer(List.of(new ItemStackWithSlot(0, held))));
+        player.detectEquipmentUpdates();
+
+        assertEquals(BASE_SPEED + 0.25, player.getAttribute(Attributes.MOVEMENT_SPEED).getValue(), 1.0e-6);
     }
 
-    private static ItemStack wireRoundTrip(ItemStack item) {
-        var buf = new RegistryFriendlyByteBuf(io.netty.buffer.Unpooled.buffer(), RegistryHelper.registryAccess());
+    private static ItemStack decodeCreativeSlotWithNaN(final ItemStack item) {
+        final RegistryFriendlyByteBuf buf = new RegistryFriendlyByteBuf(Unpooled.buffer(), RegistryHelper.registryAccess());
         try {
-            ItemStack.STREAM_CODEC.encode(buf, item);
-            int count = buf.readVarInt();
-            var type = net.minecraft.world.item.Item.STREAM_CODEC.decode(buf);
-            return new ItemStack(type, count, net.minecraft.core.component.DataComponentPatch.STREAM_CODEC.decode(buf));
+            ServerboundSetCreativeModeSlotPacket.STREAM_CODEC.encode(buf, new ServerboundSetCreativeModeSlotPacket(36, item));
+            replaceDouble(buf, WIRE_MARKER, Double.NaN);
+            final ServerboundSetCreativeModeSlotPacket packet = ServerboundSetCreativeModeSlotPacket.STREAM_CODEC.decode(buf);
+            assertEquals(0, buf.readableBytes());
+            return packet.itemStack();
         } finally {
             buf.release();
         }
     }
 
-    private static void assertReportedItemSafe(ItemStack item) {
+    private static void replaceDouble(final ByteBuf buf, final double from, final double to) {
+        final long bits = Double.doubleToRawLongBits(from);
+        for (int i = buf.readerIndex(); i <= buf.writerIndex() - Long.BYTES; i++) {
+            if (buf.getLong(i) == bits) {
+                buf.setLong(i, Double.doubleToRawLongBits(to));
+                return;
+            }
+        }
+        fail("Encoded packet does not contain " + from);
+    }
+
+    private static ItemStack sendToClient(final ItemStack item) {
+        final RegistryFriendlyByteBuf buf = new RegistryFriendlyByteBuf(Unpooled.buffer(), RegistryHelper.registryAccess());
+        try {
+            ItemStack.OPTIONAL_STREAM_CODEC.encode(buf, item);
+            return ItemStack.OPTIONAL_STREAM_CODEC.decode(buf);
+        } finally {
+            buf.release();
+        }
+    }
+
+    // The item from the report: an iron ingot equippable in the animal body slot, with infinite negative modifiers
+    // for the body slot, a movement speed bonus, and a resource-pack camera overlay.
+    private static CompoundTag reportedItem() {
+        final ListTag modifiers = new ListTag();
+        for (final String attribute : List.of("armor", "attack_damage", "gravity", "jump_strength", "max_health")) {
+            modifiers.add(bodyModifier(Identifier.withDefaultNamespace("reported_" + attribute), attribute, Double.NEGATIVE_INFINITY));
+        }
+        modifiers.add(bodyModifier(REPORTED_SPEED, "movement_speed", 0.5));
+        final CompoundTag equippable = new CompoundTag();
+        equippable.putString("slot", "body");
+        equippable.putString("camera_overlay", "minecraft:n");
+
+        final CompoundTag item = item("minecraft:iron_ingot", 64);
+        item.getCompoundOrEmpty("components").put("minecraft:attribute_modifiers", modifiers);
+        item.getCompoundOrEmpty("components").put("minecraft:equippable", equippable);
+        return item;
+    }
+
+    private static void assertReportedItemSanitized(final ItemStack item) {
         assertTrue(item.is(Items.IRON_INGOT));
         assertEquals(64, item.getCount());
-        var modifiers = item.get(DataComponents.ATTRIBUTE_MODIFIERS).modifiers();
+        final var modifiers = item.get(DataComponents.ATTRIBUTE_MODIFIERS).modifiers();
         assertEquals(1, modifiers.size());
-        assertEquals(0.5, modifiers.getFirst().modifier().amount());
-        var equipment = item.get(DataComponents.EQUIPPABLE);
+        assertEquals(REPORTED_SPEED, modifiers.getFirst().modifier().id());
+        final Equippable equipment = item.get(DataComponents.EQUIPPABLE);
         assertTrue(equipment.cameraOverlay().isEmpty());
         assertFalse(equipment.canBeEquippedBy(EntityTypes.PLAYER.builtInRegistryHolder()));
         assertTrue(equipment.canBeEquippedBy(EntityTypes.HORSE.builtInRegistryHolder()));
     }
 
-    @Test
-    void reportedStoredAndPluginItemsCannotReachClientsUnchanged() throws Exception {
-        assertReportedItemSafe(wireRoundTrip(ItemStack.CODEC.parse(ops(), reportedTag()).getOrThrow()));
-        assertReportedItemSafe(wireRoundTrip(rawReportedItem()));
-        ItemStack bundle = new ItemStack(Items.BUNDLE);
-        bundle.set(DataComponents.BUNDLE_CONTENTS, new BundleContents(List.of(net.minecraft.world.item.ItemStackTemplate.fromNonEmptyStack(rawReportedItem()))));
-        assertReportedItemSafe(wireRoundTrip(bundle).get(DataComponents.BUNDLE_CONTENTS).items().getFirst().create());
-        ItemStack box = new ItemStack(Items.SHULKER_BOX);
-        box.set(DataComponents.CONTAINER, net.minecraft.world.item.component.ItemContainerContents.fromItems(List.of(rawReportedItem())));
-        assertReportedItemSafe(wireRoundTrip(box).get(DataComponents.CONTAINER).nonEmptyItemCopyStream().findFirst().orElseThrow());
-        ItemStack crossbow = new ItemStack(Items.CROSSBOW);
-        crossbow.set(DataComponents.CHARGED_PROJECTILES, net.minecraft.world.item.component.ChargedProjectiles.ofNonEmpty(List.of(rawReportedItem())));
-        assertReportedItemSafe(wireRoundTrip(crossbow).get(DataComponents.CHARGED_PROJECTILES).items().getFirst().create());
-        ItemStack food = new ItemStack(Items.APPLE);
-        food.set(DataComponents.USE_REMAINDER, new net.minecraft.world.item.component.UseRemainder(net.minecraft.world.item.ItemStackTemplate.fromNonEmptyStack(rawReportedItem())));
-        assertReportedItemSafe(wireRoundTrip(food).get(DataComponents.USE_REMAINDER).convertInto().create());
-        var buf = new RegistryFriendlyByteBuf(io.netty.buffer.Unpooled.buffer(), RegistryHelper.registryAccess());
+    private static CompoundTag item(final String id, final int count) {
+        final CompoundTag item = new CompoundTag();
+        item.putString("id", id);
+        item.putInt("count", count);
+        item.put("components", new CompoundTag());
+        return item;
+    }
+
+    private static CompoundTag bodyModifier(final Identifier id, final String attribute, final double amount) {
+        final CompoundTag modifier = new CompoundTag();
+        modifier.putString("type", "minecraft:" + attribute);
+        modifier.putString("id", id.toString());
+        modifier.putDouble("amount", amount);
+        modifier.putString("operation", "add_value");
+        modifier.putString("slot", "body");
+        return modifier;
+    }
+
+    private static ItemStack parse(final CompoundTag tag) {
+        return ItemStack.CODEC.parse(ops(), tag).getOrThrow();
+    }
+
+    private static ItemAttributeModifiers speedModifier(final Identifier id, final double amount, final EquipmentSlotGroup slot) {
+        return ItemAttributeModifiers.builder()
+            .add(Attributes.MOVEMENT_SPEED, new AttributeModifier(id, amount, AttributeModifier.Operation.ADD_VALUE), slot)
+            .build();
+    }
+
+    private static AttributeInstance speedAttribute() {
+        final AttributeInstance speed = new AttributeInstance(Attributes.MOVEMENT_SPEED, ignored -> {});
+        speed.setBaseValue(BASE_SPEED);
+        return speed;
+    }
+
+    // A saved player wearing the reported item in the body slot.
+    private static CompoundTag savedPlayer(final List<ItemStackWithSlot> inventory) {
+        final CompoundTag equipment = new CompoundTag();
+        equipment.put("body", reportedItem());
+        final CompoundTag saved = new CompoundTag();
+        saved.put("equipment", equipment);
+        saved.put("Inventory", ItemStackWithSlot.CODEC.listOf().encodeStart(ops(), inventory).getOrThrow());
+        return saved;
+    }
+
+    private static RegistryOps<Tag> ops() {
+        return RegistryHelper.registryAccess().createSerializationContext(NbtOps.INSTANCE);
+    }
+
+    private static TestPlayer newPlayer() {
+        final ServerLevel level = mock(ServerLevel.class);
         try {
-            net.minecraft.world.item.ItemStackTemplate.STREAM_CODEC.encode(buf, net.minecraft.world.item.ItemStackTemplate.fromNonEmptyStack(rawReportedItem()));
-            var type = net.minecraft.world.item.Item.STREAM_CODEC.decode(buf);
-            int count = buf.readVarInt();
-            assertReportedItemSafe(new ItemStack(type, count, net.minecraft.core.component.DataComponentPatch.STREAM_CODEC.decode(buf)));
-        } finally {
-            buf.release();
+            final var spigotConfig = Level.class.getDeclaredField("spigotConfig");
+            spigotConfig.setAccessible(true);
+            spigotConfig.set(level, mock(SpigotWorldConfig.class));
+        } catch (final ReflectiveOperationException exception) {
+            throw new AssertionError(exception);
         }
+        when(level.registryAccess()).thenReturn(RegistryHelper.registryAccess());
+        when(level.enabledFeatures()).thenReturn(FeatureFlags.VANILLA_SET);
+        when(level.getChunkSource()).thenReturn(mock(ServerChunkCache.class));
+        return new TestPlayer(level);
     }
 
-    @Test
-    void rawCreativeIngressStripsThePayloadAndRequestsClientCorrection() throws Exception {
-        var buf = new RegistryFriendlyByteBuf(io.netty.buffer.Unpooled.buffer(), RegistryHelper.registryAccess());
-        try {
-            buf.writeShort(36);
-            buf.writeVarInt(64);
-            net.minecraft.world.item.Item.STREAM_CODEC.encode(buf, Items.IRON_INGOT.builtInRegistryHolder());
-            writeOriginalPatch(buf, true);
-            var packet = net.minecraft.network.protocol.game.ServerboundSetCreativeModeSlotPacket.STREAM_CODEC.decode(buf);
-            assertReportedItemSafe(packet.itemStack());
-            assertTrue(packet.itemStack().wereComponentsSanitizedDuringDecode());
-            assertEquals(0, buf.readableBytes());
-        } finally {
-            buf.release();
-        }
-    }
+    private static final class TestPlayer extends Player {
+        private CraftHumanEntity bukkit;
 
-    @Test
-    void nestedCreativeIngressKeepsTheClientCorrectionMarker() throws Exception {
-        for (var type : List.of(DataComponents.BUNDLE_CONTENTS, DataComponents.CONTAINER, DataComponents.CHARGED_PROJECTILES, DataComponents.USE_REMAINDER)) {
-            var buf = new RegistryFriendlyByteBuf(io.netty.buffer.Unpooled.buffer(), RegistryHelper.registryAccess());
-            var payload = new RegistryFriendlyByteBuf(io.netty.buffer.Unpooled.buffer(), RegistryHelper.registryAccess());
-            try {
-                buf.writeShort(36);
-                buf.writeVarInt(1);
-                net.minecraft.world.item.Item.STREAM_CODEC.encode(buf, Items.STONE.builtInRegistryHolder());
-                buf.writeVarInt(1);
-                buf.writeVarInt(0);
-                net.minecraft.core.component.DataComponentType.STREAM_CODEC.encode(buf, type);
-                if (type != DataComponents.USE_REMAINDER) payload.writeVarInt(1);
-                if (type == DataComponents.CONTAINER) payload.writeBoolean(true);
-                net.minecraft.world.item.Item.STREAM_CODEC.encode(payload, Items.IRON_INGOT.builtInRegistryHolder());
-                payload.writeVarInt(64);
-                writeOriginalPatch(payload, false);
-                buf.writeVarInt(payload.readableBytes());
-                buf.writeBytes(payload);
-                var packet = net.minecraft.network.protocol.game.ServerboundSetCreativeModeSlotPacket.STREAM_CODEC.decode(buf);
-                assertFalse(packet.itemStack().isEmpty());
-                assertTrue(packet.itemStack().wereComponentsSanitizedDuringDecode(), type.toString());
-                assertEquals(0, buf.readableBytes());
-            } finally {
-                payload.release();
-                buf.release();
-            }
+        TestPlayer(final Level level) {
+            super(level, new GameProfile(UUID.randomUUID(), "EquipmentTest"));
+            this.setId(1);
         }
-    }
 
-    // Encode the original primitives directly so constructor sanitation cannot hide a decode failure.
-    private static void writeOriginalPatch(RegistryFriendlyByteBuf buf, boolean delimited) throws Exception {
-        buf.writeVarInt(2);
-        buf.writeVarInt(0);
-        for (var type : List.of(DataComponents.ATTRIBUTE_MODIFIERS, DataComponents.EQUIPPABLE)) {
-            net.minecraft.core.component.DataComponentType.STREAM_CODEC.encode(buf, type);
-            var payload = new RegistryFriendlyByteBuf(io.netty.buffer.Unpooled.buffer(), RegistryHelper.registryAccess());
-            try {
-                if (type == DataComponents.ATTRIBUTE_MODIFIERS) {
-                    var entries = ItemAttributeModifiers.Entry.CODEC.listOf().parse(ops(),
-                        reportedTag().getCompoundOrEmpty("components").get("minecraft:attribute_modifiers")).getOrThrow();
-                    payload.writeVarInt(entries.size());
-                    for (var entry : entries) ItemAttributeModifiers.Entry.STREAM_CODEC.encode(payload, entry);
-                } else {
-                    var defaults = Equippable.builder(EquipmentSlot.BODY).build();
-                    EquipmentSlot.STREAM_CODEC.encode(payload, EquipmentSlot.BODY);
-                    net.minecraft.sounds.SoundEvent.STREAM_CODEC.encode(payload, defaults.equipSound());
-                    payload.writeBoolean(false); // No equipment asset.
-                    payload.writeBoolean(true);
-                    Identifier.STREAM_CODEC.encode(payload, Identifier.withDefaultNamespace("n"));
-                    payload.writeBoolean(false); // All entity types in the original payload.
-                    payload.writeBoolean(true);
-                    payload.writeBoolean(true);
-                    payload.writeBoolean(true);
-                    payload.writeBoolean(false);
-                    payload.writeBoolean(false);
-                    net.minecraft.sounds.SoundEvent.STREAM_CODEC.encode(payload, defaults.shearingSound());
-                }
-                if (delimited) buf.writeVarInt(payload.readableBytes());
-                buf.writeBytes(payload);
-            } finally {
-                payload.release();
-            }
+        @Override
+        public GameType gameMode() {
+            return GameType.SURVIVAL;
         }
-    }
 
-    @Test
-    void attributeVariantsCannotPoisonEquipmentOrAttributeSynchronization() {
-        for (double amount : new double[] {Double.NaN, Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY}) {
-            for (var operation : AttributeModifier.Operation.values()) {
-                ItemStack item = new ItemStack(Items.STONE);
-                var modifier = new AttributeModifier(Identifier.withDefaultNamespace("unsafe"), amount, operation);
-                item.set(DataComponents.ATTRIBUTE_MODIFIERS, ItemAttributeModifiers.builder()
-                    .add(Attributes.MOVEMENT_SPEED, modifier, EquipmentSlotGroup.ANY).build());
-                assertTrue(wireRoundTrip(item).get(DataComponents.ATTRIBUTE_MODIFIERS).modifiers().isEmpty());
-                AttributeInstance attribute = new AttributeInstance(Attributes.MOVEMENT_SPEED, ignored -> {});
-                attribute.addPermanentModifier(modifier);
-                var buf = new RegistryFriendlyByteBuf(io.netty.buffer.Unpooled.buffer(), RegistryHelper.registryAccess());
-                try {
-                    ClientboundUpdateAttributesPacket.STREAM_CODEC.encode(buf, new ClientboundUpdateAttributesPacket(1, List.of(attribute)));
-                    var packet = ClientboundUpdateAttributesPacket.STREAM_CODEC.decode(buf);
-                    assertTrue(packet.getValues().getFirst().modifiers().isEmpty());
-                    assertTrue(Double.isFinite(attribute.getValue()));
-                } finally {
-                    buf.release();
-                }
-            }
+        @Override
+        public CraftHumanEntity getBukkitEntity() {
+            if (this.bukkit == null) this.bukkit = mock(CraftHumanEntity.class);
+            return this.bukkit;
         }
-    }
 
-    @Test
-    void changedModifierOperationCannotSurviveRemovalOrStorage() {
-        AttributeInstance attribute = new AttributeInstance(Attributes.MOVEMENT_SPEED, ignored -> {});
-        attribute.setBaseValue(0.1);
-        var id = Identifier.withDefaultNamespace("same_id");
-        attribute.addOrUpdateTransientModifier(new AttributeModifier(id, 0.5, AttributeModifier.Operation.ADD_VALUE));
-        attribute.addOrUpdateTransientModifier(new AttributeModifier(id, 2, AttributeModifier.Operation.ADD_MULTIPLIED_TOTAL));
-        attribute.removeModifier(id);
-        assertEquals(0.1, attribute.getValue(), 1.0e-9);
-        AttributeInstance restored = new AttributeInstance(Attributes.MOVEMENT_SPEED, ignored -> {});
-        restored.apply(AttributeInstance.Packed.CODEC.parse(ops(), AttributeInstance.Packed.CODEC.encodeStart(ops(), attribute.pack()).getOrThrow()).getOrThrow());
-        assertEquals(attribute.getValue(), restored.getValue());
+        @Override
+        public CraftLivingEntity getBukkitLivingEntity() {
+            return this.getBukkitEntity();
+        }
+
+        void loadTag(final CompoundTag tag) {
+            this.readAdditionalSaveData(TagValueInput.create(ProblemReporter.DISCARDING, RegistryHelper.registryAccess(), tag));
+        }
+
+        CompoundTag saveTag() {
+            final TagValueOutput output = TagValueOutput.createWithContext(ProblemReporter.DISCARDING, RegistryHelper.registryAccess());
+            this.addAdditionalSaveData(output);
+            return output.buildResult();
+        }
     }
 }
