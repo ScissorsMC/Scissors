@@ -1,0 +1,422 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Telesphoreo <me@telesphoreo.me>
+Date: Mon, 19 Oct 2026 22:26:09 -0400
+Subject: [PATCH] Prevent unsafe equipment state and repair saved players
+
+Enforce finite modifiers and audited overlays at component construction. Restrict player equipment at its storage boundary and normalize client-visible equipment targets in both codecs. These invariants cover nested items and templates without carrier-specific checks.
+
+Recover legacy hidden equipment automatically, retain overflow, and remove its effects. Preserve equipment snapshots during online reload. Remove stale operation entries when replacing attribute modifiers so removed items cannot leave phantom effects.
+
+diff --git a/net/minecraft/core/component/DataComponentPatch.java b/net/minecraft/core/component/DataComponentPatch.java
+index 8202975a9668e137b2825bf7510b3221841bdf4b..99ddcd8070133857bbd889c8bce1bc398c430bf2 100644
+--- a/net/minecraft/core/component/DataComponentPatch.java
++++ b/net/minecraft/core/component/DataComponentPatch.java
+@@ -103,6 +103,7 @@ public final class DataComponentPatch {
+         return new StreamCodec<RegistryFriendlyByteBuf, DataComponentPatch>() {
+             @Override
+             public DataComponentPatch decode(final RegistryFriendlyByteBuf input) {
++                long sanitationRevision = io.github.scissorsmc.util.UnsafeEquipment.sanitationRevision(); // Scissors - record changes inside any nested component
+                 int positiveCount = input.readVarInt();
+                 int negativeCount = input.readVarInt();
+                 if (positiveCount == 0 && negativeCount == 0) {
+@@ -159,7 +160,8 @@ public final class DataComponentPatch {
+                 DataComponentPatch sanitized = decoded.sanitizeOversized(
+                     countingOps, delimited ? "untrusted network decode" : "network decode"
+                 );
+-                return sanitizedDuringDecode || sanitized != decoded ? sanitized.markSanitizedDuringDecode() : sanitized;
++                return sanitizedDuringDecode || sanitized != decoded || sanitationRevision != io.github.scissorsmc.util.UnsafeEquipment.sanitationRevision()
++                    ? sanitized.markSanitizedDuringDecode() : sanitized;
+             }
+ 
+             @Override
+diff --git a/net/minecraft/server/level/ServerPlayer.java b/net/minecraft/server/level/ServerPlayer.java
+index 1137be30f125cb79f05f3e5c104cdf8cca979ff1..6b6fa449ee5a2cb2fdd88bee58b73496b10b93c8 100644
+--- a/net/minecraft/server/level/ServerPlayer.java
++++ b/net/minecraft/server/level/ServerPlayer.java
+@@ -2214,6 +2214,7 @@ public class ServerPlayer extends Player implements ca.spottedleaf.moonrise.patc
+     }
+ 
+     public void restoreFrom(final ServerPlayer oldPlayer, final boolean restoreAll) {
++        this.restoreRecoveredEquipment(oldPlayer); // Scissors - preserve automatic recovery overflow across respawns
+         this.wardenSpawnTracker = oldPlayer.wardenSpawnTracker;
+         this.chatSession = oldPlayer.chatSession;
+         this.gameMode.setGameModeForPlayer(oldPlayer.gameMode.getGameModeForPlayer(), oldPlayer.gameMode.getPreviousGameModeForPlayer());
+diff --git a/net/minecraft/world/entity/LivingEntity.java b/net/minecraft/world/entity/LivingEntity.java
+index 23297b54c74684765f90e9e599d051a44357e9a5..82104af9dc07eaffebd6b067d3fb0f670ebacd63 100644
+--- a/net/minecraft/world/entity/LivingEntity.java
++++ b/net/minecraft/world/entity/LivingEntity.java
+@@ -4773,7 +4773,7 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
+         this.stopLocationBasedEffects(brokenItem, inSlot, this.attributes);
+     }
+ 
+-    private void stopLocationBasedEffects(final ItemStack previous, final EquipmentSlot inSlot, final AttributeMap attributes) {
++    protected void stopLocationBasedEffects(final ItemStack previous, final EquipmentSlot inSlot, final AttributeMap attributes) { // Scissors - repair legacy player equipment before applying it
+         previous.forEachModifier(inSlot, (attribute, modifier) -> {
+             AttributeInstance instance = attributes.getInstance(attribute);
+             if (instance != null) {
+diff --git a/net/minecraft/world/entity/ai/attributes/AttributeInstance.java b/net/minecraft/world/entity/ai/attributes/AttributeInstance.java
+index 82fb9b7092ee37bb4b46ad9a352df64821259ddc..833fd1c795c88e098176bba10363edb201255d86 100644
+--- a/net/minecraft/world/entity/ai/attributes/AttributeInstance.java
++++ b/net/minecraft/world/entity/ai/attributes/AttributeInstance.java
+@@ -43,8 +43,13 @@ public class AttributeInstance {
+     }
+ 
+     public void setBaseValue(final double baseValue) {
+-        if (baseValue != this.baseValue) {
+-            this.baseValue = baseValue;
++        // Scissors - do not retain non-finite bases from storage, commands, or plugins.
++        double safeValue = Double.isFinite(baseValue) ? baseValue : this.attribute.value().getDefaultValue();
++        if (!Double.isFinite(baseValue)) {
++            io.github.scissorsmc.util.UnsafeEquipment.warn("Restored non-finite base for " + this.attribute.getRegisteredName());
++        }
++        if (safeValue != this.baseValue) {
++            this.baseValue = safeValue;
+             this.setDirty();
+         }
+     }
+@@ -70,7 +75,8 @@ public class AttributeInstance {
+         return this.modifierById.get(modifier) != null;
+     }
+ 
+-    private void addModifier(final AttributeModifier modifier) {
++    private boolean addModifier(final AttributeModifier modifier) {
++        if (!this.isSafeModifier(modifier)) return false; // Scissors - discard unsafe values before attribute arithmetic and synchronization
+         AttributeModifier previous = this.modifierById.putIfAbsent(modifier.id(), modifier);
+         if (previous != null) {
+             throw new IllegalArgumentException("Modifier is already applied on this attribute!");
+@@ -78,11 +84,24 @@ public class AttributeInstance {
+ 
+         this.getModifiers(modifier.operation()).put(modifier.id(), modifier);
+         this.setDirty();
++        return true;
++    }
++
++    private boolean isSafeModifier(final AttributeModifier modifier) {
++        if (Double.isFinite(modifier.amount())) return true;
++        io.github.scissorsmc.util.UnsafeEquipment.warn("Discarded non-finite modifier " + modifier.id() + " for " + this.attribute.getRegisteredName());
++        return false;
+     }
+ 
+     public void addOrUpdateTransientModifier(final AttributeModifier modifier) {
++        if (!this.isSafeModifier(modifier)) {
++            this.removeModifier(modifier.id());
++            return;
++        }
+         AttributeModifier oldModifier = this.modifierById.put(modifier.id(), modifier);
+         if (modifier != oldModifier) {
++            // Scissors - changing operations must not leave a second, unremovable modifier behind.
++            if (oldModifier != null) this.getModifiers(oldModifier.operation()).remove(modifier.id());
+             this.getModifiers(modifier.operation()).put(modifier.id(), modifier);
+             this.setDirty();
+         }
+@@ -94,13 +113,11 @@ public class AttributeInstance {
+ 
+     public void addOrReplacePermanentModifier(final AttributeModifier modifier) {
+         this.removeModifier(modifier.id());
+-        this.addModifier(modifier);
+-        this.permanentModifiers.put(modifier.id(), modifier);
++        if (this.addModifier(modifier)) this.permanentModifiers.put(modifier.id(), modifier); // Scissors - never persist a discarded modifier
+     }
+ 
+     public void addPermanentModifier(final AttributeModifier modifier) {
+-        this.addModifier(modifier);
+-        this.permanentModifiers.put(modifier.id(), modifier);
++        if (this.addModifier(modifier)) this.permanentModifiers.put(modifier.id(), modifier); // Scissors - never persist a discarded modifier
+     }
+ 
+     public void addPermanentModifiers(final Collection<AttributeModifier> modifiers) {
+@@ -120,14 +137,13 @@ public class AttributeInstance {
+ 
+     public boolean removeModifier(final Identifier id) {
+         AttributeModifier modifier = this.modifierById.remove(id);
+-        if (modifier == null) {
+-            return false;
++        // Scissors - also remove orphaned entries left by older modifier-operation replacements.
++        boolean removed = modifier != null | this.permanentModifiers.remove(id) != null;
++        for (Map<Identifier, AttributeModifier> operation : this.modifiersByOperation.values()) {
++            removed |= operation.remove(id) != null;
+         }
+-
+-        this.getModifiers(modifier.operation()).remove(id);
+-        this.permanentModifiers.remove(id);
+-        this.setDirty();
+-        return true;
++        if (removed) this.setDirty();
++        return removed;
+     }
+ 
+     public void removeModifiers() {
+@@ -189,12 +205,10 @@ public class AttributeInstance {
+     }
+ 
+     public void apply(final AttributeInstance.Packed packed) {
+-        this.baseValue = packed.baseValue;
++        this.setBaseValue(packed.baseValue); // Scissors - sanitize saved bases
+ 
+         for (AttributeModifier modifier : packed.modifiers) {
+-            this.modifierById.put(modifier.id(), modifier);
+-            this.getModifiers(modifier.operation()).put(modifier.id(), modifier);
+-            this.permanentModifiers.put(modifier.id(), modifier);
++            this.addOrReplacePermanentModifier(modifier); // Scissors - sanitize saved modifiers and duplicate operation IDs
+         }
+ 
+         this.setDirty();
+diff --git a/net/minecraft/world/entity/player/Player.java b/net/minecraft/world/entity/player/Player.java
+index 4068dc1cea4edca196dc0c58b4804e94dd07881e..c80dbc260f4884f6357ad40e9c12330296d6a531 100644
+--- a/net/minecraft/world/entity/player/Player.java
++++ b/net/minecraft/world/entity/player/Player.java
+@@ -149,6 +149,11 @@ public abstract class Player extends Avatar implements ContainerUser {
+     private static final int DEFAULT_SCORE = 0;
+     public static final float CREATIVE_ENTITY_INTERACTION_RANGE_MODIFIER_VALUE = 2.0F;
+     private final Inventory inventory;
++    private final List<ItemStack> recoveredEquipment = new ArrayList<>(); // Scissors - preserve recovery overflow across saves without cancellable drops
++    private boolean equipmentRecoveryPending;
++    private boolean refreshRecoveredEquipmentEffects;
++    private boolean loadingEquipment;
++    private static final int MAX_RECOVERED_EQUIPMENT = 8; // Scissors - bound the saved recovery buffer
+     protected PlayerEnderChestContainer enderChestInventory = new PlayerEnderChestContainer(this); // CraftBukkit - add "this" to constructor
+     public final InventoryMenu inventoryMenu;
+     public AbstractContainerMenu containerMenu;
+@@ -652,7 +657,21 @@ public abstract class Player extends Avatar implements ContainerUser {
+ 
+     @Override
+     protected void readAdditionalSaveData(final ValueInput input) {
+-        super.readAdditionalSaveData(input);
++        this.recoveredEquipment.clear();
++        this.equipmentRecoveryPending = false;
++        for (ItemStack recovered : input.listOrEmpty("ScissorsRecoveredEquipment", ItemStack.CODEC)) {
++            if (this.recoveredEquipment.size() >= MAX_RECOVERED_EQUIPMENT) {
++                io.github.scissorsmc.util.UnsafeEquipment.warn("Discarded excess saved equipment recovery entries for " + this.getUUID());
++                break;
++            }
++            this.recoveredEquipment.add(recovered);
++        }
++        this.loadingEquipment = true;
++        try {
++            super.readAdditionalSaveData(input);
++        } finally {
++            this.loadingEquipment = false;
++        }
+         this.setUUID(this.gameProfile.id());
+         this.inventory.load(input.listOrEmpty("Inventory", ItemStackWithSlot.CODEC));
+         this.inventory.setSelectedSlot(input.getIntOr("SelectedItemSlot", 0));
+@@ -671,6 +690,7 @@ public abstract class Player extends Avatar implements ContainerUser {
+         this.getAttribute(Attributes.MOVEMENT_SPEED).setBaseValue(this.abilities.getWalkingSpeed());
+         this.enderChestInventory.fromSlots(input.listOrEmpty("EnderItems", ItemStackWithSlot.CODEC));
+         this.setLastDeathLocation(input.read("LastDeathLocation", GlobalPos.CODEC));
++        this.repairUnsafeEquipment(); // Scissors - clean saved hidden slots before login synchronization
+     }
+ 
+     @Override
+@@ -689,6 +709,7 @@ public abstract class Player extends Avatar implements ContainerUser {
+         output.store("abilities", Abilities.Packed.CODEC, this.abilities.pack());
+         this.enderChestInventory.storeAsSlots(output.list("EnderItems", ItemStackWithSlot.CODEC));
+         this.lastDeathLocation.ifPresent(pos -> output.store("LastDeathLocation", GlobalPos.CODEC, pos));
++        if (!this.recoveredEquipment.isEmpty()) output.store("ScissorsRecoveredEquipment", ItemStack.CODEC.listOf(), this.recoveredEquipment); // Scissors - retain safe recovery overflow
+     }
+ 
+     @Override
+@@ -1986,7 +2007,42 @@ public abstract class Player extends Avatar implements ContainerUser {
+     // Paper start - Force update attributes.
+     @Override
+     public void detectEquipmentUpdates() {
++        boolean repaired = this.repairUnsafeEquipment(); // Scissors - finish recovery after rejecting unsupported equipment storage
+         super.detectEquipmentUpdates();
++        if (this.refreshRecoveredEquipmentEffects) {
++            this.refreshRecoveredEquipmentEffects = false;
++            // Scissors - preserve old snapshots for cleanup and events, then restore shared modifier IDs.
++            for (EquipmentSlot slot : EquipmentSlot.VALUES) {
++                ItemStack item = this.getItemBySlot(slot);
++                if (!this.canUseSlot(slot) || item.isEmpty() || item.isBroken()) continue;
++                item.forEachModifier(slot, (attribute, modifier) -> {
++                    var instance = this.getAttributes().getInstance(attribute);
++                    if (instance != null) {
++                        instance.removeModifier(modifier.id());
++                        instance.addTransientModifier(modifier);
++                    }
++                });
++                for (var enchantment : item.getEnchantments().entrySet()) {
++                    var active = this.activeLocationDependentEnchantments(slot).get(enchantment.getKey().value());
++                    if (active != null) {
++                        for (var effect : active) io.github.scissorsmc.util.UnsafeEquipment.restoreAttributeEffect(effect, enchantment.getIntValue(), slot, this);
++                    }
++                }
++            }
++        }
++        if (repaired && this instanceof net.minecraft.server.level.ServerPlayer player && player.connection != null) {
++            // Scissors - the owner also needs hidden-slot, attribute, velocity, and inventory corrections.
++            java.util.List<com.mojang.datafixers.util.Pair<EquipmentSlot, ItemStack>> equipment = new java.util.ArrayList<>();
++            for (EquipmentSlot slot : EquipmentSlot.VALUES) {
++                equipment.add(com.mojang.datafixers.util.Pair.of(slot, this.getItemBySlot(slot).copy()));
++            }
++            player.connection.send(new net.minecraft.network.protocol.game.ClientboundSetEquipmentPacket(this.getId(), equipment));
++            player.connection.send(new net.minecraft.network.protocol.game.ClientboundUpdateAttributesPacket(this.getId(), this.getAttributes().getSyncableAttributes()));
++            player.connection.send(new net.minecraft.network.protocol.game.ClientboundSetEntityMotionPacket(this));
++            player.onUpdateAbilities();
++            player.inventoryMenu.sendAllDataToRemote();
++            if (player.containerMenu != player.inventoryMenu) player.containerMenu.sendAllDataToRemote();
++        }
+ 
+         if (!io.papermc.paper.configuration.GlobalConfiguration.get().unsupportedSettings.updateEquipmentOnPlayerActions) {
+             return;
+@@ -2004,6 +2060,61 @@ public abstract class Player extends Avatar implements ContainerUser {
+     }
+     // Paper end - Force update attributes.
+ 
++    // Scissors start - recover hidden equipment and remove its effects automatically
++    @Override
++    public boolean canUseSlot(final EquipmentSlot slot) {
++        return io.github.scissorsmc.util.UnsafeEquipment.isPlayerSlot(slot);
++    }
++
++    private boolean repairUnsafeEquipment() {
++        boolean repaired = this.equipmentRecoveryPending;
++        this.equipmentRecoveryPending = false;
++        if (repaired) {
++            this.refreshRecoveredEquipmentEffects = true;
++            this.setDeltaMovement(net.minecraft.world.phys.Vec3.ZERO);
++        }
++        for (java.util.Iterator<ItemStack> pending = this.recoveredEquipment.iterator(); pending.hasNext();) {
++            ItemStack item = pending.next();
++            while (!item.isEmpty()) {
++                int slot = this.inventory.getSlotWithRemainingSpace(item);
++                if (slot == Inventory.NOT_FOUND_INDEX) slot = this.inventory.getFreeSlot();
++                if (slot == Inventory.NOT_FOUND_INDEX) break;
++                ItemStack existing = this.inventory.getItem(slot);
++                int room = Math.min(item.getMaxStackSize(), this.inventory.getMaxStackSize()) - existing.getCount();
++                int count = Math.min(room, item.getCount());
++                if (count <= 0) break;
++                if (existing.isEmpty()) this.inventory.setItem(slot, item.split(count));
++                else { existing.grow(count); item.shrink(count); }
++                this.inventory.setChanged();
++                repaired = true;
++            }
++            if (item.isEmpty()) pending.remove();
++        }
++        return repaired;
++    }
++
++    void recoverUnsupportedEquipment(final EquipmentSlot slot, final ItemStack item) {
++        this.stopLocationBasedEffects(item, slot, this.getAttributes());
++        if (this.recoveredEquipment.size() < MAX_RECOVERED_EQUIPMENT) {
++            this.recoveredEquipment.add(ItemStack.sanitizeUnsafeData(item).copy());
++        } else {
++            io.github.scissorsmc.util.UnsafeEquipment.warn("Discarded excess unsupported player equipment for " + this.getUUID());
++        }
++        this.equipmentRecoveryPending = true;
++        com.mojang.logging.LogUtils.getLogger().warn("Recovered unsupported {} equipment for player {} ({}); removed its attribute and enchantment effects", slot.getSerializedName(), this.getGameProfile().name(), this.getUUID());
++    }
++
++    boolean isLoadingEquipment() {
++        return this.loadingEquipment;
++    }
++
++    protected void restoreRecoveredEquipment(final Player oldPlayer) {
++        if (oldPlayer == this) return;
++        this.recoveredEquipment.addAll(oldPlayer.recoveredEquipment);
++        oldPlayer.recoveredEquipment.clear();
++    }
++    // Scissors end - recover hidden equipment and remove its effects automatically
++
+     public void resetOnlyAttackStrengthTicker() {
+         this.attackStrengthTicker = 0;
+     }
+diff --git a/net/minecraft/world/entity/player/PlayerEquipment.java b/net/minecraft/world/entity/player/PlayerEquipment.java
+index e59787c1698e96df98ef4cf98d62b4a67c4e95dc..607d573e221d590a6d7f33b9885dea5ee5a10d0b 100644
+--- a/net/minecraft/world/entity/player/PlayerEquipment.java
++++ b/net/minecraft/world/entity/player/PlayerEquipment.java
+@@ -13,9 +13,28 @@ public class PlayerEquipment extends EntityEquipment {
+ 
+     @Override
+     public ItemStack set(final EquipmentSlot slot, final ItemStack itemStack) {
++        // Scissors - commands, plugins, and vanilla equipment changes share this storage boundary.
++        if (!io.github.scissorsmc.util.UnsafeEquipment.isPlayerSlot(slot) && !itemStack.isEmpty()) {
++            io.github.scissorsmc.util.UnsafeEquipment.warn("Refused unsupported player equipment slot " + slot.getSerializedName() + " for " + this.player.getUUID());
++            return this.get(slot);
++        }
+         return slot == EquipmentSlot.MAINHAND ? this.player.getInventory().setSelectedItem(itemStack) : super.set(slot, itemStack);
+     }
+ 
++    @Override
++    public void setAll(final EntityEquipment equipment) {
++        if (equipment == this) return;
++        super.clear();
++        for (EquipmentSlot slot : EquipmentSlot.VALUES) {
++            ItemStack item = equipment.get(slot);
++            if (this.player.isLoadingEquipment() && !io.github.scissorsmc.util.UnsafeEquipment.isPlayerSlot(slot) && !item.isEmpty()) {
++                this.player.recoverUnsupportedEquipment(slot, item);
++            } else {
++                this.set(slot, item);
++            }
++        }
++    }
++
+     @Override
+     public ItemStack get(final EquipmentSlot slot) {
+         return slot == EquipmentSlot.MAINHAND ? this.player.getInventory().getSelectedItem() : super.get(slot);
+diff --git a/net/minecraft/world/item/component/ItemAttributeModifiers.java b/net/minecraft/world/item/component/ItemAttributeModifiers.java
+index 491f34acb2a145efb8d33119762a44b43a863c6c..1eefae04ea34e4fcadbffe66f99fd510586fa20a 100644
+--- a/net/minecraft/world/item/component/ItemAttributeModifiers.java
++++ b/net/minecraft/world/item/component/ItemAttributeModifiers.java
+@@ -34,6 +34,14 @@ import org.apache.commons.lang3.function.TriConsumer;
+ import org.jspecify.annotations.Nullable;
+ 
+ public record ItemAttributeModifiers(List<ItemAttributeModifiers.Entry> modifiers) {
++    // Scissors - codecs, builders, and APIs all construct this immutable component.
++    public ItemAttributeModifiers {
++        var finite = modifiers.stream().filter(entry -> Double.isFinite(entry.modifier().amount())).toList();
++        if (finite.size() != modifiers.size()) {
++            io.github.scissorsmc.util.UnsafeEquipment.removed("Removed " + (modifiers.size() - finite.size()) + " non-finite item attribute modifiers");
++        }
++        modifiers = finite;
++    }
+     public static final ItemAttributeModifiers EMPTY = new ItemAttributeModifiers(List.of());
+     public static final Codec<ItemAttributeModifiers> CODEC = ItemAttributeModifiers.Entry.CODEC
+         .listOf()
+diff --git a/net/minecraft/world/item/equipment/Equippable.java b/net/minecraft/world/item/equipment/Equippable.java
+index b0c7b15632bf08808fb9d943f7b3462400f89f56..3e75b0a338536aac672acc17d0e5227200e568a6 100644
+--- a/net/minecraft/world/item/equipment/Equippable.java
++++ b/net/minecraft/world/item/equipment/Equippable.java
+@@ -44,7 +44,15 @@ public record Equippable(
+     boolean canBeSheared,
+     Holder<SoundEvent> shearingSound
+ ) {
+-    public static final Codec<Equippable> CODEC = RecordCodecBuilder.create(
++    // Scissors - enforce the overlay invariant for every codec, builder, and API caller.
++    public Equippable {
++        if (cameraOverlay.isPresent() && !io.github.scissorsmc.util.UnsafeEquipment.isSafeOverlay(slot, cameraOverlay.get())) {
++            io.github.scissorsmc.util.UnsafeEquipment.removed("Removed unaudited camera overlay " + cameraOverlay.get() + " from slot " + slot.getSerializedName());
++            cameraOverlay = Optional.empty();
++        }
++    }
++
++    public static final Codec<Equippable> CODEC = RecordCodecBuilder.<Equippable>create(
+         i -> i.group(
+                 EquipmentSlot.CODEC.fieldOf("slot").forGetter(Equippable::slot),
+                 SoundEvent.CODEC.optionalFieldOf("equip_sound", SoundEvents.ARMOR_EQUIP_GENERIC).forGetter(Equippable::equipSound),
+@@ -61,7 +69,7 @@ public record Equippable(
+                     .forGetter(Equippable::shearingSound)
+             )
+             .apply(i, Equippable::new)
+-    );
++    ).xmap(io.github.scissorsmc.util.UnsafeEquipment::restrictPlayerTargets, io.github.scissorsmc.util.UnsafeEquipment::restrictPlayerTargets); // Scissors - persistent output also reaches clients
+     public static final StreamCodec<RegistryFriendlyByteBuf, Equippable> STREAM_CODEC = StreamCodec.composite(
+         EquipmentSlot.STREAM_CODEC,
+         Equippable::slot,
+@@ -86,7 +94,7 @@ public record Equippable(
+         SoundEvent.STREAM_CODEC,
+         Equippable::shearingSound,
+         Equippable::new
+-    );
++    ).map(io.github.scissorsmc.util.UnsafeEquipment::restrictPlayerTargets, io.github.scissorsmc.util.UnsafeEquipment::restrictPlayerTargets); // Scissors - give clients the same slot restriction
+ 
+     public static Equippable llamaSwag(final DyeColor color) {
+         return builder(EquipmentSlot.BODY)
+@@ -187,6 +195,7 @@ public record Equippable(
+     }
+ 
+     public boolean canBeEquippedBy(final Holder<EntityType<?>> type) {
++        if (type.value() == EntityTypes.PLAYER && !io.github.scissorsmc.util.UnsafeEquipment.isPlayerSlot(this.slot)) return false; // Scissors - animal slots are not player equipment
+         return this.allowedEntities.isEmpty() || this.allowedEntities.get().contains(type);
+     }
+ 
