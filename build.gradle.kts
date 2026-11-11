@@ -44,6 +44,23 @@ project(":paper-checkstyle") {
     layout.buildDirectory = rootProject.layout.buildDirectory.dir("paper-checkstyle")
 }
 
+// paperweight's patch rebuild tasks stage their regenerated patches with `git add` in this repository. Gradle runs
+// them in parallel, and concurrent `git add` calls fail on .git/index.lock, so they share a single-use lock.
+abstract class RootGitIndexLock : BuildService<BuildServiceParameters.None>
+
+val rootGitIndexLock = gradle.sharedServices.registerIfAbsent("rootGitIndexLock", RootGitIndexLock::class) {
+    maxParallelUsages = 1
+}
+
+allprojects {
+    tasks.withType<io.papermc.paperweight.core.tasks.patching.RebuildFilePatches>().configureEach {
+        usesService(rootGitIndexLock)
+    }
+    tasks.withType<io.papermc.paperweight.tasks.RebuildGitPatches>().configureEach {
+        usesService(rootGitIndexLock)
+    }
+}
+
 subprojects {
     apply(plugin = "java-library")
     apply(plugin = "maven-publish")
