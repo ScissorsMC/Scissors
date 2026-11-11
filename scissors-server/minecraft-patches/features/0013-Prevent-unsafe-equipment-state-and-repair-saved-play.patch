@@ -42,10 +42,10 @@ index 1137be30f125cb79f05f3e5c104cdf8cca979ff1..6b6fa449ee5a2cb2fdd88bee58b73496
          this.chatSession = oldPlayer.chatSession;
          this.gameMode.setGameModeForPlayer(oldPlayer.gameMode.getGameModeForPlayer(), oldPlayer.gameMode.getPreviousGameModeForPlayer());
 diff --git a/net/minecraft/world/entity/LivingEntity.java b/net/minecraft/world/entity/LivingEntity.java
-index 23297b54c74684765f90e9e599d051a44357e9a5..82104af9dc07eaffebd6b067d3fb0f670ebacd63 100644
+index a0d10e4c3f78128029125bae8e8e476208f28d42..c72e323b2fd4ac835f2c009407810178e5d35c09 100644
 --- a/net/minecraft/world/entity/LivingEntity.java
 +++ b/net/minecraft/world/entity/LivingEntity.java
-@@ -4773,7 +4773,7 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
+@@ -4784,7 +4784,7 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
          this.stopLocationBasedEffects(brokenItem, inSlot, this.attributes);
      }
  
@@ -162,7 +162,7 @@ index 82fb9b7092ee37bb4b46ad9a352df64821259ddc..833fd1c795c88e098176bba10363edb2
  
          this.setDirty();
 diff --git a/net/minecraft/world/entity/player/Player.java b/net/minecraft/world/entity/player/Player.java
-index 4068dc1cea4edca196dc0c58b4804e94dd07881e..c80dbc260f4884f6357ad40e9c12330296d6a531 100644
+index 4ba3fb85b0473b4e7aa237701034d25f84e955cd..c9e686c91cf44d289bbe6fc1a57aef1b0feadc0f 100644
 --- a/net/minecraft/world/entity/player/Player.java
 +++ b/net/minecraft/world/entity/player/Player.java
 @@ -149,6 +149,11 @@ public abstract class Player extends Avatar implements ContainerUser {

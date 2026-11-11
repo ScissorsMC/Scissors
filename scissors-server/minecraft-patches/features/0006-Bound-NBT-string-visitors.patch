@@ -778,10 +778,10 @@ index 07d06eaea3ab06b021f292800e6e18dbe07e99d4..40c88ef85217b54600c06fb8cd980b1f
  
              @Override
 diff --git a/net/minecraft/world/entity/EntityType.java b/net/minecraft/world/entity/EntityType.java
-index 04b9138882054b8d5160463987821d9ad205c628..f23a8ab063cf40e77d8c6b2dffae0c68b9cf5d83 100644
+index 9cd12e7781349a2d0b1dd2c41651409af1684db5..d70c83b98a253e1d6d5215c6c0d183734e955e6e 100644
 --- a/net/minecraft/world/entity/EntityType.java
 +++ b/net/minecraft/world/entity/EntityType.java
-@@ -403,7 +403,7 @@ public class EntityType<T extends Entity> implements EntityTypeTest<Entity, T>,
+@@ -410,7 +410,7 @@ public class EntityType<T extends Entity> implements EntityTypeTest<Entity, T>,
              () -> {
                  LOGGER.warn("Skipping Entity with id {}", input.getStringOr("id", "[invalid]"));
                  if ((DEBUG_ENTITIES_WITH_INVALID_IDS || level.getCraftServer().getServer().isDebugging()) && input instanceof TagValueInput tagInput) {
