@@ -6,7 +6,7 @@ Subject: [PATCH] Test entity selector range limits
 
 diff --git a/src/test/java/io/papermc/paper/scissors/EntitySelectorRangeTest.java b/src/test/java/io/papermc/paper/scissors/EntitySelectorRangeTest.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..6ee175014cfc600ae010ca433837ce02fbefe863
+index 0000000000000000000000000000000000000000..91337178dc12e4bfacec3f1428ca639408a3c624
 --- /dev/null
 +++ b/src/test/java/io/papermc/paper/scissors/EntitySelectorRangeTest.java
 @@ -0,0 +1,93 @@
@@ -89,10 +89,10 @@ index 0000000000000000000000000000000000000000..6ee175014cfc600ae010ca433837ce02
 +
 +        final Field rangeField = EntitySelector.class.getDeclaredField("range");
 +        rangeField.setAccessible(true);
-+        final MinMaxBounds.Doubles range = (MinMaxBounds.Doubles)rangeField.get(selector);
++        final MinMaxBounds.Doubles range = (MinMaxBounds.Doubles) rangeField.get(selector);
 +        final Field aabbField = EntitySelector.class.getDeclaredField("aabb");
 +        aabbField.setAccessible(true);
-+        final AABB aabb = (AABB)aabbField.get(selector);
++        final AABB aabb = (AABB) aabbField.get(selector);
 +
 +        assertEquals(EntitySelector.MAX_RANGE, range.max().orElseThrow());
 +        assertEquals(-EntitySelector.MAX_RANGE, aabb.minX);

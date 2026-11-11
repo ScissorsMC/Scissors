@@ -1,4 +1,4 @@
-package io.papermc.paper.scissors;
+package io.github.scissorsmc.util;
 
 import com.mojang.authlib.GameProfile;
 import io.netty.buffer.ByteBuf;
@@ -44,6 +44,7 @@ import org.bukkit.craftbukkit.entity.CraftHumanEntity;
 import org.bukkit.plugin.PluginManager;
 import org.bukkit.support.DummyServerHelper;
 import org.bukkit.support.RegistryHelper;
+import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.spigotmc.SpigotWorldConfig;
@@ -324,7 +325,7 @@ class UnsafeEquipmentTest {
     }
 
     private static AttributeInstance speedAttribute() {
-        final AttributeInstance speed = new AttributeInstance(Attributes.MOVEMENT_SPEED, ignored -> {});
+        final AttributeInstance speed = new AttributeInstance(Attributes.MOVEMENT_SPEED, ignored -> { });
         speed.setBaseValue(BASE_SPEED);
         return speed;
     }
@@ -359,7 +360,7 @@ class UnsafeEquipmentTest {
     }
 
     private static final class TestPlayer extends Player {
-        private CraftHumanEntity bukkit;
+        private @Nullable CraftHumanEntity bukkit;
 
         TestPlayer(final Level level) {
             super(level, new GameProfile(UUID.randomUUID(), "EquipmentTest"));

@@ -6,17 +6,25 @@ import java.util.concurrent.atomic.AtomicLong;
 import net.minecraft.core.HolderSet;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.resources.Identifier;
+import net.minecraft.util.Util;
+import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.EntityTypes;
 import net.minecraft.world.entity.EquipmentSlot;
+import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.item.enchantment.effects.AllOf;
+import net.minecraft.world.item.enchantment.effects.EnchantmentAttributeEffect;
+import net.minecraft.world.item.enchantment.effects.EnchantmentLocationBasedEffect;
 import net.minecraft.world.item.equipment.Equippable;
+import org.slf4j.Logger;
 
 public final class UnsafeEquipment {
-    private static final org.slf4j.Logger LOGGER = LogUtils.getLogger();
+    private static final Logger LOGGER = LogUtils.getLogger();
     private static final AtomicLong NEXT_WARNING = new AtomicLong();
     private static final ThreadLocal<long[]> SANITATION_REVISION = ThreadLocal.withInitial(() -> new long[1]);
     private static final Identifier PUMPKIN_OVERLAY = Identifier.withDefaultNamespace("misc/pumpkinblur");
 
-    private UnsafeEquipment() {}
+    private UnsafeEquipment() {
+    }
 
     public static boolean isPlayerSlot(EquipmentSlot slot) {
         return switch (slot) {
@@ -44,26 +52,25 @@ public final class UnsafeEquipment {
         // Bootstrap tags cannot be enumerated. Both codecs repeat this restriction when they write bound data.
         if (allowed.isPresent() && (!allowed.get().isBound() || !allowed.get().contains(EntityTypes.PLAYER.builtInRegistryHolder()))) return equipment;
         var entities = allowed.isPresent() ? allowed.get().stream() : BuiltInRegistries.ENTITY_TYPE.listElements();
-        Optional<HolderSet<net.minecraft.world.entity.EntityType<?>>> safe = Optional.of(HolderSet.direct(entities.filter(type -> type.value() != EntityTypes.PLAYER).toList()));
+        Optional<HolderSet<EntityType<?>>> safe = Optional.of(HolderSet.direct(entities.filter(type -> type.value() != EntityTypes.PLAYER).toList()));
         removed("Removed player target from animal equipment slot " + equipment.slot().getSerializedName());
         return new Equippable(equipment.slot(), equipment.equipSound(), equipment.assetId(), equipment.cameraOverlay(), safe,
             equipment.dispensable(), equipment.swappable(), equipment.damageOnHurt(), equipment.equipOnInteract(), equipment.canBeSheared(), equipment.shearingSound());
     }
 
     public static void warn(String message) {
-        long now = net.minecraft.util.Util.getMillis();
+        long now = Util.getMillis();
         long next = NEXT_WARNING.get();
         if (now >= next && NEXT_WARNING.compareAndSet(next, now + 300_000L)) {
             LOGGER.warn("{}; suppressing further unsafe-equipment warnings for five minutes", message);
         }
     }
 
-    public static void restoreAttributeEffect(net.minecraft.world.item.enchantment.effects.EnchantmentLocationBasedEffect effect,
-                                             int level, EquipmentSlot slot, net.minecraft.world.entity.LivingEntity entity) {
-        if (effect instanceof net.minecraft.world.item.enchantment.effects.EnchantmentAttributeEffect attribute) {
+    public static void restoreAttributeEffect(EnchantmentLocationBasedEffect effect, int level, EquipmentSlot slot, LivingEntity entity) {
+        if (effect instanceof EnchantmentAttributeEffect attribute) {
             var instance = entity.getAttributes().getInstance(attribute.attribute());
             if (instance != null) instance.addOrUpdateTransientModifier(attribute.getModifier(level, slot));
-        } else if (effect instanceof net.minecraft.world.item.enchantment.effects.AllOf.LocationBasedEffects group) {
+        } else if (effect instanceof AllOf.LocationBasedEffects group) {
             for (var child : group.effects()) restoreAttributeEffect(child, level, slot, entity);
         }
     }

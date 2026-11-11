@@ -6,15 +6,16 @@ Subject: [PATCH] Test vehicle collision limits
 
 diff --git a/src/test/java/io/papermc/paper/scissors/MinecartPopulationLimitTest.java b/src/test/java/io/papermc/paper/scissors/MinecartPopulationLimitTest.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..600932cf6f9065f37b463fad377b6c69b1d4501e
+index 0000000000000000000000000000000000000000..ed8208d18e0443aafdbb46958d6b06ffd24a1d14
 --- /dev/null
 +++ b/src/test/java/io/papermc/paper/scissors/MinecartPopulationLimitTest.java
-@@ -0,0 +1,309 @@
+@@ -0,0 +1,357 @@
 +package io.papermc.paper.scissors;
 +
 +import ca.spottedleaf.moonrise.patches.chunk_system.level.entity.ChunkEntitySlices;
 +import ca.spottedleaf.moonrise.patches.chunk_system.level.entity.EntityLookup;
 +import io.papermc.paper.configuration.WorldConfiguration;
++import it.unimi.dsi.fastutil.objects.Reference2ObjectOpenHashMap;
 +import java.util.ArrayList;
 +import java.util.List;
 +import java.util.concurrent.atomic.AtomicInteger;
@@ -38,6 +39,7 @@ index 0000000000000000000000000000000000000000..600932cf6f9065f37b463fad377b6c69
 +import net.minecraft.world.level.Level;
 +import net.minecraft.world.level.entity.LevelCallback;
 +import org.bukkit.support.environment.Normal;
++import org.jspecify.annotations.Nullable;
 +import org.junit.jupiter.api.Test;
 +import org.junit.jupiter.params.ParameterizedTest;
 +import org.junit.jupiter.params.provider.ValueSource;
@@ -253,7 +255,7 @@ index 0000000000000000000000000000000000000000..600932cf6f9065f37b463fad377b6c69
 +            final WorldConfiguration config = mock(WorldConfiguration.class);
 +            config.entities = mock(WorldConfiguration.Entities.class);
 +            config.entities.spawning = mock(WorldConfiguration.Entities.Spawning.class);
-+            config.entities.spawning.despawnTime = new it.unimi.dsi.fastutil.objects.Reference2ObjectOpenHashMap<>();
++            config.entities.spawning.despawnTime = new Reference2ObjectOpenHashMap<>();
 +            config.scoreboards = mock(WorldConfiguration.Scoreboards.class);
 +            when(this.level.paperConfig()).thenReturn(config);
 +            final var spigotConfig = Level.class.getDeclaredField("spigotConfig");
@@ -266,13 +268,13 @@ index 0000000000000000000000000000000000000000..600932cf6f9065f37b463fad377b6c69
 +            final AtomicInteger ids = new AtomicInteger();
 +            when(this.level.getNextEntityId()).thenAnswer(invocation -> ids.incrementAndGet());
 +            this.callback = mock(LevelCallback.class);
-+            this.lookup = new TestLookup(this.level, callback);
++            this.lookup = new TestLookup(this.level, this.callback);
 +            when(this.level.moonrise$getEntityLookup()).thenReturn(this.lookup);
 +            doAnswer(invocation -> {
 +                final Entity entity = invocation.getArgument(0);
 +                this.tracked.add(entity);
 +                return null;
-+            }).when(callback).onTrackingStart(any());
++            }).when(this.callback).onTrackingStart(any());
 +        }
 +
 +        Minecart cart(final int x, final int y, final int z) {
@@ -298,39 +300,86 @@ index 0000000000000000000000000000000000000000..600932cf6f9065f37b463fad377b6c69
 +    }
 +
 +    private static final class TestLookup extends EntityLookup {
-+        TestLookup(final Level world, final LevelCallback<Entity> callback) { super(world, callback); }
-+        @Override protected Boolean blockTicketUpdates() { return null; }
-+        @Override protected void setBlockTicketUpdates(final Boolean value) { }
-+        @Override protected void checkThread(final int x, final int z, final String reason) { }
-+        @Override protected void checkThread(final Entity entity, final String reason) { }
-+        @Override protected ChunkEntitySlices createEntityChunk(final int x, final int z, final boolean transientChunk) {
++        TestLookup(final Level world, final LevelCallback<Entity> callback) {
++            super(world, callback);
++        }
++
++        @Override
++        protected @Nullable Boolean blockTicketUpdates() {
++            return null;
++        }
++
++        @Override
++        protected void setBlockTicketUpdates(final @Nullable Boolean value) {
++        }
++
++        @Override
++        protected void checkThread(final int x, final int z, final String reason) {
++        }
++
++        @Override
++        protected void checkThread(final Entity entity, final String reason) {
++        }
++
++        @Override
++        protected ChunkEntitySlices createEntityChunk(final int x, final int z, final boolean transientChunk) {
 +            final ChunkEntitySlices chunk = new ChunkEntitySlices(this.world, x, z, FullChunkStatus.ENTITY_TICKING, null, -4, 19);
 +            this.addChunk(x, z, chunk);
 +            return chunk;
 +        }
-+        @Override protected void onEmptySlices(final int x, final int z) { this.removeChunk(x, z); }
-+        @Override protected void entitySectionChangeCallback(final Entity entity, final int oldX, final int oldY, final int oldZ, final int x, final int y, final int z) { }
-+        @Override protected void addEntityCallback(final Entity entity) { }
-+        @Override protected void removeEntityCallback(final Entity entity) { }
-+        @Override protected void entityStartLoaded(final Entity entity) { }
-+        @Override protected void entityEndLoaded(final Entity entity) { }
-+        @Override protected void entityStartTicking(final Entity entity) { }
-+        @Override protected void entityEndTicking(final Entity entity) { }
-+        @Override protected boolean screenEntity(final Entity entity, final boolean fromDisk, final boolean event) { return true; }
++
++        @Override
++        protected void onEmptySlices(final int x, final int z) {
++            this.removeChunk(x, z);
++        }
++
++        @Override
++        protected void entitySectionChangeCallback(final Entity entity, final int oldX, final int oldY, final int oldZ, final int x, final int y, final int z) {
++        }
++
++        @Override
++        protected void addEntityCallback(final Entity entity) {
++        }
++
++        @Override
++        protected void removeEntityCallback(final Entity entity) {
++        }
++
++        @Override
++        protected void entityStartLoaded(final Entity entity) {
++        }
++
++        @Override
++        protected void entityEndLoaded(final Entity entity) {
++        }
++
++        @Override
++        protected void entityStartTicking(final Entity entity) {
++        }
++
++        @Override
++        protected void entityEndTicking(final Entity entity) {
++        }
++
++        @Override
++        protected boolean screenEntity(final Entity entity, final boolean fromDisk, final boolean event) {
++            return true;
++        }
 +    }
 +}
 diff --git a/src/test/java/io/papermc/paper/scissors/VehicleCollisionLimitTest.java b/src/test/java/io/papermc/paper/scissors/VehicleCollisionLimitTest.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..77033fdbe9ed1b766ac3875f7934f819ac1292ff
+index 0000000000000000000000000000000000000000..c244c3ac44cdd8c2e842d84efcd0343edab6b29e
 --- /dev/null
 +++ b/src/test/java/io/papermc/paper/scissors/VehicleCollisionLimitTest.java
-@@ -0,0 +1,381 @@
+@@ -0,0 +1,385 @@
 +package io.papermc.paper.scissors;
 +
 +import ca.spottedleaf.moonrise.patches.chunk_system.level.entity.ChunkEntitySlices;
 +import ca.spottedleaf.moonrise.patches.chunk_system.level.entity.EntityLookup;
 +import ca.spottedleaf.moonrise.patches.collisions.CollisionUtil;
 +import io.papermc.paper.configuration.WorldConfiguration;
++import it.unimi.dsi.fastutil.objects.Reference2ObjectOpenHashMap;
 +import java.lang.reflect.InvocationTargetException;
 +import java.lang.reflect.Method;
 +import java.util.ArrayList;
@@ -364,6 +413,7 @@ index 0000000000000000000000000000000000000000..77033fdbe9ed1b766ac3875f7934f819
 +import net.minecraft.world.level.Level;
 +import net.minecraft.world.phys.AABB;
 +import org.bukkit.support.environment.Normal;
++import org.jspecify.annotations.Nullable;
 +import org.junit.jupiter.api.Test;
 +import org.junit.jupiter.params.ParameterizedTest;
 +import org.junit.jupiter.params.provider.MethodSource;
@@ -412,8 +462,8 @@ index 0000000000000000000000000000000000000000..77033fdbe9ed1b766ac3875f7934f819
 +    @Test
 +    void evaluatesPredicatesOnlyForBoundedRawCandidates() {
 +        final AtomicInteger evaluations = new AtomicInteger();
-+        final List<Entity> candidates = Collections.nCopies(100, null);
-+        final List<Entity> selected = filterCollisionCandidates(candidates, entity -> {
++        final List<@Nullable Entity> candidates = Collections.nCopies(100, null);
++        final List<@Nullable Entity> selected = filterCollisionCandidates(candidates, entity -> {
 +            evaluations.incrementAndGet();
 +            return true;
 +        }, 16);
@@ -491,7 +541,9 @@ index 0000000000000000000000000000000000000000..77033fdbe9ed1b766ac3875f7934f819
 +    void disabledCollisionsDoNotScanOrEvaluatePredicates(final int configuredLimit) throws ReflectiveOperationException {
 +        final Fixture fixture = new Fixture(configuredLimit);
 +        final CountingMinecart cart = fixture.pile(3).getFirst();
-+        final Predicate<Entity> fail = entity -> { throw new AssertionError("Disabled collision predicate"); };
++        final Predicate<Entity> fail = entity -> {
++            throw new AssertionError("Disabled collision predicate");
++        };
 +        assertTrue(cart.getHardCollisionEntities(cart.getBoundingBox(), fail).isEmpty());
 +        assertTrue(cart.pushCandidates(fail).isEmpty());
 +        verify(fixture.lookup, never()).getChunk(anyInt(), anyInt());
@@ -625,7 +677,7 @@ index 0000000000000000000000000000000000000000..77033fdbe9ed1b766ac3875f7934f819
 +            config.collisions.maxEntityCollisions = configuredLimit;
 +            config.entities = mock(WorldConfiguration.Entities.class);
 +            config.entities.spawning = mock(WorldConfiguration.Entities.Spawning.class);
-+            config.entities.spawning.despawnTime = new it.unimi.dsi.fastutil.objects.Reference2ObjectOpenHashMap<>();
++            config.entities.spawning.despawnTime = new Reference2ObjectOpenHashMap<>();
 +            config.scoreboards = mock(WorldConfiguration.Scoreboards.class);
 +            when(this.level.paperConfig()).thenReturn(config);
 +            final var spigotConfig = Level.class.getDeclaredField("spigotConfig");
@@ -687,20 +739,20 @@ index 0000000000000000000000000000000000000000..77033fdbe9ed1b766ac3875f7934f819
 +        try {
 +            final Method method = VehicleEntity.class.getDeclaredMethod("collisionLimit", int.class);
 +            method.setAccessible(true);
-+            return (int)method.invoke(null, configuredLimit);
++            return (int) method.invoke(null, configuredLimit);
 +        } catch (final NoSuchMethodException | IllegalAccessException | InvocationTargetException exception) {
 +            throw new AssertionError(exception);
 +        }
 +    }
 +
 +    @SuppressWarnings("unchecked")
-+    private static List<Entity> filterCollisionCandidates(
-+        final List<Entity> candidates, final Predicate<? super Entity> predicate, final int collisionLimit
++    private static List<@Nullable Entity> filterCollisionCandidates(
++        final List<@Nullable Entity> candidates, final Predicate<? super @Nullable Entity> predicate, final int collisionLimit
 +    ) {
 +        try {
 +            final Method method = VehicleEntity.class.getDeclaredMethod("filterCollisionCandidates", List.class, Predicate.class, int.class);
 +            method.setAccessible(true);
-+            return (List<Entity>)method.invoke(null, candidates, predicate, collisionLimit);
++            return (List<@Nullable Entity>) method.invoke(null, candidates, predicate, collisionLimit);
 +        } catch (final NoSuchMethodException | IllegalAccessException | InvocationTargetException exception) {
 +            throw new AssertionError(exception);
 +        }

@@ -50,3 +50,13 @@ index 0000000000000000000000000000000000000000..ba7e6f4f21e1e2d4cdce6e6da87d7495
 +        assertFalse(CommandNesting.exceedsMaxDepth(escapedQuote));
 +    }
 +}
+diff --git a/src/test/java/io/papermc/paper/command/package-info.java b/src/test/java/io/papermc/paper/command/package-info.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..77e18cab92c9615322bb520797fbc6e4b21e782f
+--- /dev/null
++++ b/src/test/java/io/papermc/paper/command/package-info.java
+@@ -0,0 +1,4 @@
++@NullMarked
++package io.papermc.paper.command;
++
++import org.jspecify.annotations.NullMarked;

@@ -6,7 +6,7 @@ Subject: [PATCH] Test hurting projectile acceleration sanitization
 
 diff --git a/src/test/java/io/papermc/paper/scissors/AbstractHurtingProjectileTest.java b/src/test/java/io/papermc/paper/scissors/AbstractHurtingProjectileTest.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..d5db8952d88a06dd0fb284074a9644961ebb2894
+index 0000000000000000000000000000000000000000..9538f0bcd0e18c15bd497fc8875a638f40f7fdb5
 --- /dev/null
 +++ b/src/test/java/io/papermc/paper/scissors/AbstractHurtingProjectileTest.java
 @@ -0,0 +1,37 @@
@@ -41,9 +41,19 @@ index 0000000000000000000000000000000000000000..d5db8952d88a06dd0fb284074a964496
 +        try {
 +            final Method method = AbstractHurtingProjectile.class.getDeclaredMethod("sanitizeAccelerationPowerValue", double.class);
 +            method.setAccessible(true);
-+            return (double)method.invoke(null, value);
++            return (double) method.invoke(null, value);
 +        } catch (final NoSuchMethodException | IllegalAccessException | InvocationTargetException exception) {
 +            throw new AssertionError(exception);
 +        }
 +    }
 +}
+diff --git a/src/test/java/io/papermc/paper/scissors/package-info.java b/src/test/java/io/papermc/paper/scissors/package-info.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..d0a70d73ab1210cf75a33cd69a150da485e264d8
+--- /dev/null
++++ b/src/test/java/io/papermc/paper/scissors/package-info.java
+@@ -0,0 +1,4 @@
++@NullMarked
++package io.papermc.paper.scissors;
++
++import org.jspecify.annotations.NullMarked;

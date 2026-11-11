@@ -1,4 +1,4 @@
-package io.papermc.paper.scissors;
+package io.github.scissorsmc.util;
 
 import org.junit.platform.suite.api.SelectClasses;
 import org.junit.platform.suite.api.Suite;
