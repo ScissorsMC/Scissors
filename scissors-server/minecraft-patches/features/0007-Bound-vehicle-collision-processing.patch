@@ -215,10 +215,10 @@ index 11d4f2d5caba52b492b8e130faa4701f3980b0f1..3506f5058a35b8ed561f4f86dcc390a6
          } else {
              entities = ((ChunkSystemEntityGetter)world).moonrise$getHardCollidingEntities(entity, aabb, predicate);
 diff --git a/net/minecraft/server/level/ServerLevel.java b/net/minecraft/server/level/ServerLevel.java
-index 807799f827bf08f01a3e9389fca595dd1c90fa92..1dfd1d074ed7a5c7e7fb86f2b303c73e524c6ead 100644
+index cdc1e68f94dc642d11772e20ae35a85e89c0ddcc..48de29418c7d32d0f3ce525ae7aca21ae5c15582 100644
 --- a/net/minecraft/server/level/ServerLevel.java
 +++ b/net/minecraft/server/level/ServerLevel.java
-@@ -1668,7 +1668,7 @@ public class ServerLevel extends Level implements WorldGenLevel, ServerEntityGet
+@@ -1669,7 +1669,7 @@ public class ServerLevel extends Level implements WorldGenLevel, ServerEntityGet
              }
              // CraftBukkit end
  
