@@ -6,7 +6,7 @@ Subject: [PATCH] Bound item component serialization work
 Reject or strip component values whose encoded structure exceeds a shared complexity budget before codec traversal can stall the server. Apply the same rule to persistent and network boundaries so alternate component carriers cannot bypass it.
 
 diff --git a/net/minecraft/core/component/DataComponentPatch.java b/net/minecraft/core/component/DataComponentPatch.java
-index 99668e7ac52fa079d7a475ff3fc3b63c566b2d63..8202975a9668e137b2825bf7510b3221841bdf4b 100644
+index 0926a435ce2ddd0373e0ed2dbf8c502546d9023e..361d336db298046e25e52db00f8fba474a61ec5a 100644
 --- a/net/minecraft/core/component/DataComponentPatch.java
 +++ b/net/minecraft/core/component/DataComponentPatch.java
 @@ -1,25 +1,46 @@
@@ -402,10 +402,10 @@ index 99668e7ac52fa079d7a475ff3fc3b63c566b2d63..8202975a9668e137b2825bf7510b3221
  
      public static DataComponentPatch.Builder builder() {
 diff --git a/net/minecraft/server/network/ServerGamePacketListenerImpl.java b/net/minecraft/server/network/ServerGamePacketListenerImpl.java
-index 98b267feae222bd9fa46012c9074401d9cbf0f67..536ff803ddbc9e619712d83588ae65ee045b8309 100644
+index 4514276f510d6527ed8b2ca4f142c026e7d73c13..6724ee8312541cea57df87c65c37d053e5d7990e 100644
 --- a/net/minecraft/server/network/ServerGamePacketListenerImpl.java
 +++ b/net/minecraft/server/network/ServerGamePacketListenerImpl.java
-@@ -3647,7 +3647,7 @@ public class ServerGamePacketListenerImpl
+@@ -3649,7 +3649,7 @@ public class ServerGamePacketListenerImpl
              if (!sanitizedItem.isEmpty() && ItemStack.validateStrict(sanitizedItem).isError()) {
                  sanitizedItem = ItemStack.EMPTY;
              }
@@ -415,7 +415,7 @@ index 98b267feae222bd9fa46012c9074401d9cbf0f67..536ff803ddbc9e619712d83588ae65ee
                  long now = Util.getMillis();
                  if (now - this.lastUnsafeCreativeItemWarning >= UNSAFE_CREATIVE_ITEM_LOG_INTERVAL) {
 diff --git a/net/minecraft/world/item/ItemStack.java b/net/minecraft/world/item/ItemStack.java
-index 9802f73880a1c1f09d677b74616bb03001d63dac..58f7997a16d688dc4bfa59ab16b120d2b66c4aee 100644
+index aad7ddae7b0bed4788f18d72ea2e2acbf4a43f30..edbb455ab160d88bcf64d4dd83f0ffbf7a693764 100644
 --- a/net/minecraft/world/item/ItemStack.java
 +++ b/net/minecraft/world/item/ItemStack.java
 @@ -169,6 +169,7 @@ public final class ItemStack implements DataComponentHolder, ItemInstance {
