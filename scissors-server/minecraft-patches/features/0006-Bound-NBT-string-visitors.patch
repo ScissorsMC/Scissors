@@ -6,7 +6,7 @@ Subject: [PATCH] Bound NBT string visitors
 Use a shared 1024-element and 64-level budget for attacker-facing diagnostic, macro, and component rendering while keeping default SNBT visitors lossless for durable serialization. Produce valid truncated SNBT and rate-limit truncation logging.
 
 diff --git a/net/minecraft/commands/functions/MacroFunction.java b/net/minecraft/commands/functions/MacroFunction.java
-index a5b5a55fcad2430ebf7c742e99922fc7da913d5f..a434056a51b00f9826f8c8cace66b1d4b32e25c7 100644
+index a24867bc68b6207b851f8cc11f74be1999be8ab4..230fff00a88c699ba3e62bec663f75f55100684d 100644
 --- a/net/minecraft/commands/functions/MacroFunction.java
 +++ b/net/minecraft/commands/functions/MacroFunction.java
 @@ -21,6 +21,7 @@ import net.minecraft.nbt.FloatTag;
@@ -58,7 +58,7 @@ index f9eb0c985fe67df8acb5a933ed7a66f3af40b5f2..867eecd9bea8bdccf417ced0daa18e65
  
      // Paper start - option to read via codec without logging errors
 diff --git a/net/minecraft/nbt/SnbtPrinterTagVisitor.java b/net/minecraft/nbt/SnbtPrinterTagVisitor.java
-index 3b6b3c4fd2575b62db83bb5fa9acc449b2c9f73b..b56dd5d7ca9ee802afaf14fc92061d55c37aa198 100644
+index 65a7bbb63112bc2b2dd49353f871846d07682541..2670ab436df089e0ef4d49d97c036336561006fb 100644
 --- a/net/minecraft/nbt/SnbtPrinterTagVisitor.java
 +++ b/net/minecraft/nbt/SnbtPrinterTagVisitor.java
 @@ -4,16 +4,24 @@ import com.google.common.base.Strings;
@@ -293,7 +293,7 @@ index 3b6b3c4fd2575b62db83bb5fa9acc449b2c9f73b..b56dd5d7ca9ee802afaf14fc92061d55
 +    // Scissors end - share one breadth budget across recursively-created pretty printers
  }
 diff --git a/net/minecraft/nbt/StringTagVisitor.java b/net/minecraft/nbt/StringTagVisitor.java
-index ca9bdecde83ddff074fa62ec057832186651c969..f051142576023fcc7a4bffe9778751b9052d48cf 100644
+index 734ae0633aa5971e7df449248cd6c2e511767e53..8c92b9791f17422411d02fe1195f05537d893b66 100644
 --- a/net/minecraft/nbt/StringTagVisitor.java
 +++ b/net/minecraft/nbt/StringTagVisitor.java
 @@ -1,13 +1,43 @@
@@ -371,15 +371,14 @@ index ca9bdecde83ddff074fa62ec057832186651c969..f051142576023fcc7a4bffe9778751b9
      @Override
      public void visitList(final ListTag tag) {
          this.builder.append('[');
--
--        for (int i = 0; i < tag.size(); i++) {
--            if (i != 0) {
 +        if (this.depth >= this.maxDepth - 1) {
 +            this.logTruncation();
 +            this.builder.append(']');
 +            return;
 +        }
-+
+ 
+-        for (int i = 0; i < tag.size(); i++) {
+-            if (i != 0) {
 +        int rendered = 0;
 +        for (int i = 0; i < tag.size() && this.consumeElement(); i++) {
 +            if (rendered++ != 0) {
@@ -402,14 +401,13 @@ index ca9bdecde83ddff074fa62ec057832186651c969..f051142576023fcc7a4bffe9778751b9
          this.builder.append('{');
 -        List<Entry<String, Tag>> entries = new ArrayList<>(tag.entrySet());
 -        entries.sort(Entry.comparingByKey());
--
--        for (int i = 0; i < entries.size(); i++) {
 +        if (this.depth >= this.maxDepth - 1) {
 +            this.logTruncation();
 +            this.builder.append('}');
 +            return;
 +        }
-+
+ 
+-        for (int i = 0; i < entries.size(); i++) {
 +        List<Entry<String, Tag>> entries = new ArrayList<>(Math.min(tag.size(), this.remainingElements));
 +        if (tag.size() <= this.remainingElements) {
 +            entries.addAll(tag.entrySet());
@@ -473,7 +471,7 @@ index ca9bdecde83ddff074fa62ec057832186651c969..f051142576023fcc7a4bffe9778751b9
      public void visitEnd(final EndTag tag) {
          this.builder.append("END");
 diff --git a/net/minecraft/nbt/TextComponentTagVisitor.java b/net/minecraft/nbt/TextComponentTagVisitor.java
-index cca3627f096e7f99bdc0498f2132cc7208a24ecd..eab4902294bf0825ad70e76bdcf7d9baf8e99324 100644
+index 6273c3b9563d4ac6d1e856f06058ec599ebcc60d..1986114c5f0d1855e39fd933fd974c67512e365c 100644
 --- a/net/minecraft/nbt/TextComponentTagVisitor.java
 +++ b/net/minecraft/nbt/TextComponentTagVisitor.java
 @@ -9,6 +9,8 @@ import java.util.Iterator;
@@ -745,7 +743,7 @@ index 4f2bd2e89f683bbc148e49cc8262c9b1f4544031..60ceb443d34823186a42e87726415534
  
      @Deprecated
 diff --git a/net/minecraft/network/chat/contents/NbtContents.java b/net/minecraft/network/chat/contents/NbtContents.java
-index d061665f82fbc0b20b3fef2d0f246cb0259afa45..dec8200b88447991bebeef089852203220a211e0 100644
+index acfcb3490ccab8b33667cc28fb9e949012991cf1..da907dd667abbf0385b5debd448efc282f9e50e2 100644
 --- a/net/minecraft/network/chat/contents/NbtContents.java
 +++ b/net/minecraft/network/chat/contents/NbtContents.java
 @@ -82,7 +82,7 @@ public record NbtContents(
@@ -758,7 +756,7 @@ index d061665f82fbc0b20b3fef2d0f246cb0259afa45..dec8200b88447991bebeef0898522032
                      }
                  }).reduce((left, right) -> left.append(resolvedSeparator).append(right)).orElseGet(Component::empty);
 diff --git a/net/minecraft/network/codec/ByteBufCodecs.java b/net/minecraft/network/codec/ByteBufCodecs.java
-index 3c9d8efb427a739f295580f4acd91787c8b183d2..a5fcb2b441217f4991842c5404e02742fd08ea1f 100644
+index 07d06eaea3ab06b021f292800e6e18dbe07e99d4..40c88ef85217b54600c06fb8cd980b1fc321b575 100644
 --- a/net/minecraft/network/codec/ByteBufCodecs.java
 +++ b/net/minecraft/network/codec/ByteBufCodecs.java
 @@ -407,7 +407,7 @@ public interface ByteBufCodecs {
@@ -793,7 +791,7 @@ index 9cd12e7781349a2d0b1dd2c41651409af1684db5..d70c83b98a253e1d6d5215c6c0d18373
              }
              // Paper end - Add logging for debugging entity tags with invalid ids
 diff --git a/net/minecraft/world/item/component/CustomData.java b/net/minecraft/world/item/component/CustomData.java
-index c3d7cac8e3e09f3091138d27fe70aef37a59a98d..a7c5d6a4aebc5ed3749808dc003ef2dc0e3a8a81 100644
+index 587e4bcd87a5d995037728772bd5b6c990b4c4a1..43b1a9d0bc72c9e891e162e920a62f8ca35a8e7d 100644
 --- a/net/minecraft/world/item/component/CustomData.java
 +++ b/net/minecraft/world/item/component/CustomData.java
 @@ -95,6 +95,6 @@ public final class CustomData {

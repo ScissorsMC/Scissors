@@ -42,10 +42,10 @@ index 1137be30f125cb79f05f3e5c104cdf8cca979ff1..6b6fa449ee5a2cb2fdd88bee58b73496
          this.chatSession = oldPlayer.chatSession;
          this.gameMode.setGameModeForPlayer(oldPlayer.gameMode.getGameModeForPlayer(), oldPlayer.gameMode.getPreviousGameModeForPlayer());
 diff --git a/net/minecraft/world/entity/LivingEntity.java b/net/minecraft/world/entity/LivingEntity.java
-index a0d10e4c3f78128029125bae8e8e476208f28d42..c72e323b2fd4ac835f2c009407810178e5d35c09 100644
+index 0aabee33497faf8179bfa0f79a52e017ccd2eb5c..75b1e7abc79fd4d0984bbe6ec7bf13a2daaad757 100644
 --- a/net/minecraft/world/entity/LivingEntity.java
 +++ b/net/minecraft/world/entity/LivingEntity.java
-@@ -4784,7 +4784,7 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
+@@ -4785,7 +4785,7 @@ public abstract class LivingEntity extends Entity implements Attackable, Waypoin
          this.stopLocationBasedEffects(brokenItem, inSlot, this.attributes);
      }
  
